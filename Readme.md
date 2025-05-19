@@ -44,6 +44,34 @@
 - Node.js에서 Java/Spring Boot로 전환
 - 강타입 언어의 컴파일 타임 체크를 통한 데이터 안정성 확보
 
+
+### env.properties 설정
+```bash
+## 프로젝트 디렉토리로 이동
+cd matching/src/main/resources/properties
+```
+```properties 
+DB_HOST=jdbc:mysql://localhost:3306/exchange
+DB_NAME=default
+DB_PASSWORD=1234
+
+KAFKA_HOST=localhost
+KAFKA_NAME=default
+KAFKA_PASSWORD=1234
+
+EUREKA_HOST=localhost
+EUREKA_NAME=default
+EUREKA_PASSWORD=1234
+
+REDIS_HOST=localhost
+REDIS_NAME=default
+REDIS_PASSWORD=1234
+
+CASSANDRA_HOST=localhost
+CASSANDRA_NAME=default
+CASSANDRA_PASSWORD=1234
+```
+
 ### Docker Compose 실행
 ```bash
 # docker 디렉토리로 이동
