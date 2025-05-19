@@ -1,0 +1,96 @@
+version: '3.8'
+
+services:  
+  zookeeper:
+    image: wurstmeister/zookeeper:latest
+    container_name: zookeeper
+    restart: unless-stopped
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+      # SASL 인증 활성화
+      JVMFLAGS: "-Djava.security.auth.login.config=/etc/zookeeper/zookeeper_jaas.conf"
+    volumes:
+      - ./zookeeper_server_jass.conf:/etc/zookeeper/zookeeper_jaas.conf
+    networks:
+      - cdc-network
+
+  kafka:
+    image: wurstmeister/kafka:latest
+    container_name: kafka
+    restart: unless-stopped
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: INSIDE://kafka:29092,OUTSIDE://localhost:9092
+      KAFKA_LISTENERS: INSIDE://kafka:29092,OUTSIDE://0.0.0.0:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INSIDE:PLAINTEXT,OUTSIDE:SASL_PLAINTEXT
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_INTER_BROKER_LISTENER_NAME: INSIDE
+
+      # SASL 설정 추가
+      KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND: "false"
+      KAFKA_SUPER_USERS: "User:admin;User:default"
+      KAFKA_OPTS: "-Djava.security.auth.login.config=/etc/kafka/kafka_jaas.conf"
+      KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
+      KAFKA_SASL_ENABLED_MECHANISMS: PLAIN
+    volumes:
+      - ./kafka_client_jass.conf:/etc/kafka/kafka_jaas.conf
+    depends_on:
+      - zookeeper
+    networks:
+      - cdc-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      AUTH_TYPE: "LOGIN_FORM"
+      SPRING_SECURITY_USER_NAME: default
+      SPRING_SECURITY_USER_PASSWORD: 1234
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      # 세션 타임아웃 설정 (밀리초 단위)
+      SERVER_SERVLET_SESSION_TIMEOUT: 86400
+      # 선택적으로 쿠키 만료 시간도 설정 가능
+      SERVER_SERVLET_SESSION_COOKIE_MAX_AGE: 86400
+    networks:
+      - cdc-network
+
+  # kafka-connect:
+  #   image: debezium/connect:3.0.0.Final
+  #   container_name: kafka-connect
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8083:8083"
+  #   environment:
+  #     # Kafka Connect 설정
+  #     BOOTSTRAP_SERVERS: kafka:29092
+  #     GROUP_ID: mysql-connect-group
+  #     CONFIG_STORAGE_TOPIC: my_connect_configs
+  #     OFFSET_STORAGE_TOPIC: my_connect_offsets
+  #     STATUS_STORAGE_TOPIC: my_connect_statuses
+  #     KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+  #     VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+  #     KEY_CONVERTER_SCHEMAS_ENABLE: "false"
+  #     VALUE_CONVERTER_SCHEMAS_ENABLE: "false"
+      
+  #     # SASL 인증 설정 (기존 Kafka 설정과 맞춤)
+  #     SASL_MECHANISM: PLAIN
+  #     SECURITY_PROTOCOL: SASL_PLAINTEXT
+  #     SASL_JAAS_CONFIG: 'org.apache.kafka.common.security.plain.PlainLoginModule required username="default" password="1234";'
+  #   volumes:
+  #     - ./kafka_client_jass.conf:/etc/kafka/kafka_jaas.conf
+  #   networks:
+  #     - cdc-network
+  #   depends_on:
+  #     - kafka
+
+networks:
+  cdc-network:
+    external: true

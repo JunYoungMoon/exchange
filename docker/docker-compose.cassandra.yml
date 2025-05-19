@@ -1,0 +1,223 @@
+services:
+  # HAProxy 로드 밸런서
+  # haproxy:
+  #   image: haproxy:latest
+  #   container_name: haproxy
+  #   restart: unless-stopped
+  #   ports:
+  #     - "9042:9042"
+  #   volumes:
+  #     - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+  #   depends_on:
+  #     - cassandra-dc1-node1
+  #     - cassandra-dc1-node2
+  #     - cassandra-dc1-node3
+  #     - cassandra-dc2-node1
+  #     - cassandra-dc2-node2
+  #     - cassandra-dc2-node3
+  #   networks:
+  #     - default
+
+  # 데이터센터 1의 노드 1
+  cassandra-dc1-node1:
+    image: cassandra:latest
+    container_name: cassandra-dc1-node1
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    environment:
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+      # - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2,cassandra-dc2-node1,cassandra-dc2-node2
+      - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2
+      - CASSANDRA_CLUSTER_NAME=exchange_cluster
+      - CASSANDRA_DC=DC1
+      - CASSANDRA_RACK=RACK1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_USERNAME=default
+      - CASSANDRA_PASSWORD=1234
+      - LOCAL_JMX=no
+    volumes:
+      - ../exchange_data/cassandra_data_dc1_node1:/var/lib/cassandra
+      - ./cassandra-docker.yaml:/etc/cassandra/cassandra.yaml
+      - ./jmxremote.password:/etc/cassandra/jmxremote.password
+    networks:
+      - cdc-network
+
+  # 데이터센터 1의 노드 2
+  cassandra-dc1-node2:
+    image: cassandra:latest
+    container_name: cassandra-dc1-node2
+    restart: unless-stopped
+    # ports:
+    #   - "9043:9042"
+    environment:
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+      # - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2,cassandra-dc2-node1,cassandra-dc2-node2
+      - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2
+      - CASSANDRA_CLUSTER_NAME=exchange_cluster
+      - CASSANDRA_DC=DC1
+      - CASSANDRA_RACK=RACK1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_USERNAME=default
+      - CASSANDRA_PASSWORD=1234
+      - LOCAL_JMX=no
+    volumes:
+      - ../exchange_data/cassandra_data_dc1_node2:/var/lib/cassandra
+      # - ./cassandra.yaml:/etc/cassandra/cassandra.yaml
+      - ./jmxremote.password:/etc/cassandra/jmxremote.password
+    depends_on:
+      - cassandra-dc1-node1
+    networks:
+      - cdc-network
+
+  # 데이터센터 1의 노드 3
+  cassandra-dc1-node3:
+    image: cassandra:latest
+    container_name: cassandra-dc1-node3
+    restart: unless-stopped
+    environment:
+      - MAX_HEAP_SIZE=512M
+      - HEAP_NEWSIZE=100M
+      # - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2,cassandra-dc2-node1,cassandra-dc2-node2
+      - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2
+      - CASSANDRA_CLUSTER_NAME=exchange_cluster
+      - CASSANDRA_DC=DC1
+      - CASSANDRA_RACK=RACK1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+      - CASSANDRA_USERNAME=default
+      - CASSANDRA_PASSWORD=1234
+      - LOCAL_JMX=no
+    volumes:
+      - ../exchange_data/cassandra_data_dc1_node3:/var/lib/cassandra
+      # - ./cassandra.yaml:/etc/cassandra/cassandra.yaml
+      - ./jmxremote.password:/etc/cassandra/jmxremote.password
+    depends_on:
+      - cassandra-dc1-node1
+    networks:
+      - cdc-network
+
+  # 데이터센터 2의 노드 1
+  # cassandra-dc2-node1:
+  #   image: cassandra:latest
+  #   container_name: cassandra-dc2-node1
+  #   restart: unless-stopped
+  #   environment:
+  #     - MAX_HEAP_SIZE=512M
+  #     - HEAP_NEWSIZE=100M
+  #     - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2,cassandra-dc2-node1,cassandra-dc2-node2
+  #     - CASSANDRA_CLUSTER_NAME=exchange_cluster
+  #     - CASSANDRA_DC=DC2
+  #     - CASSANDRA_RACK=RACK1
+  #     - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+  #     - CASSANDRA_USERNAME=default
+  #     - CASSANDRA_PASSWORD=1234
+  #     - CASSANDRA_CDC_ENABLED=true
+  #     - CASSANDRA_CDC_RAW_DIRECTORY=/var/lib/cassandra/cdc_raw
+  #     - LOCAL_JMX=no
+  #   volumes:
+  #     - ../exchange_data/cassandra_data_dc2_node1:/var/lib/cassandra
+  #     # - ./cassandra.yaml:/etc/cassandra/cassandra.yaml
+  #     - ./jmxremote.password:/etc/cassandra/jmxremote.password
+  #   depends_on:
+  #     - cassandra-dc1-node1
+  #   networks:
+  #     - default
+  #     - cdc-network
+
+  # 데이터센터 2의 노드 2
+  # cassandra-dc2-node2:
+  #   image: cassandra:latest
+  #   container_name: cassandra-dc2-node2
+  #   restart: unless-stopped
+  #   environment:
+  #     - MAX_HEAP_SIZE=512M
+  #     - HEAP_NEWSIZE=100M
+  #     - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2,cassandra-dc2-node1,cassandra-dc2-node2
+  #     - CASSANDRA_CLUSTER_NAME=exchange_cluster
+  #     - CASSANDRA_DC=DC2
+  #     - CASSANDRA_RACK=RACK1
+  #     - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+  #     - CASSANDRA_USERNAME=default
+  #     - CASSANDRA_PASSWORD=1234
+  #     - CASSANDRA_CDC_ENABLED=true
+  #     - CASSANDRA_CDC_RAW_DIRECTORY=/var/lib/cassandra/cdc_raw
+  #     - LOCAL_JMX=no
+  #   volumes:
+  #     - ../exchange_data/cassandra_data_dc2_node2:/var/lib/cassandra
+  #     # - ./cassandra.yaml:/etc/cassandra/cassandra.yaml
+  #     - ./jmxremote.password:/etc/cassandra/jmxremote.password
+  #   depends_on:
+  #     - cassandra-dc2-node1
+  #   networks:
+  #     - default
+  #     - cdc-network
+
+  # 데이터센터 2의 노드 3
+  # cassandra-dc2-node3:
+  #   image: cassandra:latest
+  #   container_name: cassandra-dc2-node3
+  #   restart: unless-stopped
+  #   environment:
+  #     - MAX_HEAP_SIZE=512M
+  #     - HEAP_NEWSIZE=100M
+  #     - CASSANDRA_SEEDS=cassandra-dc1-node1,cassandra-dc1-node2,cassandra-dc2-node1,cassandra-dc2-node2
+  #     - CASSANDRA_CLUSTER_NAME=exchange_cluster
+  #     - CASSANDRA_DC=DC2
+  #     - CASSANDRA_RACK=RACK1
+  #     - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+  #     - CASSANDRA_USERNAME=default
+  #     - CASSANDRA_PASSWORD=1234
+  #     - CASSANDRA_CDC_ENABLED=true
+  #     - CASSANDRA_CDC_RAW_DIRECTORY=/var/lib/cassandra/cdc_raw
+  #     - LOCAL_JMX=no
+  #   volumes:
+  #     - ../exchange_data/cassandra_data_dc2_node3:/var/lib/cassandra
+  #     # - ./cassandra.yaml:/etc/cassandra/cassandra.yaml
+  #     - ./jmxremote.password:/etc/cassandra/jmxremote.password
+  #   depends_on:
+  #     - cassandra-dc2-node1
+  #   networks:
+  #     - default
+  #     - cdc-network
+
+  # # 추가 모니터링1 (필요시)
+  # cassandra-exporter-dc1-node1:
+  #   image: criteord/cassandra_exporter:latest
+  #   container_name: cassandra-exporter-dc1-node1
+  #   restart: unless-stopped
+  #   environment:
+  #     - CASSANDRA_EXPORTER_CONFIG_host=cassandra-dc1-node1:7199
+  #     - CASSANDRA_EXPORTER_CONFIG_user=default
+  #     - CASSANDRA_EXPORTER_CONFIG_password=1234
+  #   ports:
+  #     - "8080:8080"
+  #   depends_on:
+  #     - cassandra-dc1-node1
+  #   networks:
+  #     - default
+  #     - outside
+
+  # # 추가 모니터링2 (필요시)
+  # cassandra-exporter-dc2-node1:
+  #   image: criteord/cassandra_exporter:latest
+  #   container_name: cassandra-exporter-dc2-node1
+  #   restart: unless-stopped
+  #   environment:
+  #     - CASSANDRA_EXPORTER_CONFIG_host=cassandra-dc2-node1:7199
+  #     - CASSANDRA_EXPORTER_CONFIG_user=default
+  #     - CASSANDRA_EXPORTER_CONFIG_password=1234
+  #   ports:
+  #     - "8081:8080"
+  #   depends_on:
+  #     - cassandra-dc2-node1
+  #   networks:
+  #     - default
+  #     - outside
+
+networks:
+  outside:
+    external: true
+  cdc-network:
+    external: true

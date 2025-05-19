@@ -1,0 +1,23 @@
+services:
+  controller:
+    image: ngrinder/controller:latest
+    container_name: ngrinder-controller
+    restart: unless-stopped
+    ports:
+      - "9000:80"
+      - "16001:16001"
+      - "12000-12009:12000-12009"
+    volumes:
+      - ../exchange_data/ngrinder-data:/opt/ngrinder-controller
+    networks:
+      - ngrinder-network
+
+  agent1:
+    image: ngrinder/agent:latest
+    container_name: ngrinder-agent1
+    restart: unless-stopped
+    networks:
+      - ngrinder-network
+
+networks:
+  ngrinder-network:

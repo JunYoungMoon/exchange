@@ -1,0 +1,155 @@
+services:
+  redis-stack:
+    image: redis/redis-stack-server:latest
+    container_name: redis-stack
+    restart: unless-stopped
+    environment:
+      REDIS_ARGS: '--requirepass 1234'
+    ports:
+      - "6379:6379"
+    volumes:
+      - ../exchange_data/redis_data:/data
+
+  redis-exporter:
+    image: bitnami/redis-exporter:latest
+    container_name: redis-exporter
+    restart: unless-stopped
+    environment:
+      REDIS_ADDR: "redis://redis-stack:6379"
+      REDIS_PASSWORD: "1234"
+      REDIS_EXPORTER_LOG_FORMAT: "json"
+    ports:
+      - "9121:9121"
+    depends_on:
+      - redis-stack
+
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: node-exporter
+    restart: unless-stopped
+    ports:
+      - "9100:9100"
+
+  mysql:
+    image: mysql:8.0.41
+    container_name: mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: 1234
+      MYSQL_DATABASE: defaultDB
+      MYSQL_USER: default
+      MYSQL_PASSWORD: 1234
+    ports:
+      - "3306:3306"
+    volumes:
+      - ../exchange_data/mysql_data:/var/lib/mysql
+
+  # mysqld-exporter:
+  #   container_name: mysqld-exporter
+  #   image: bitnami/mysqld-exporter:latest
+  #   restart: unless-stopped
+  #   command:
+  #     - '--config.my-cnf=/etc/mysqld_exporter/.my.cnf'
+  #   volumes:
+  #     - ./my-cnf:/etc/mysqld_exporter/.my.cnf
+  #   ports:
+  #     - "9104:9104"
+  #   depends_on:
+  #     - mysql
+  #   networks:
+  #     - default
+
+  # mongodb:  
+  #   image: mongo:latest
+  #   container_name: mongodb
+  #   restart: unless-stopped
+  #   environment:
+  #     MONGO_INITDB_ROOT_USERNAME: default
+  #     MONGO_INITDB_ROOT_PASSWORD: 1234
+  #   ports:
+  #     - "27017:27017"
+  #   volumes:
+  #     - ../exchange_data/mongodb_data:/data/db
+
+  eureka: 
+    build: ../../exchange/eureka/
+    container_name: eureka
+    restart: unless-stopped
+    ports:
+      - "19090:19090"
+
+  prometheus:
+    image: prom/prometheus:latest
+    restart: unless-stopped
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    entrypoint: ["/bin/prometheus", "--config.file=/etc/prometheus/prometheus.yml"]
+    networks:
+      - default
+      - outside
+
+  grafana:
+    image: grafana/grafana:latest
+    restart: unless-stopped
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=default
+      - GF_SECURITY_ADMIN_PASSWORD=1234
+    ports:
+      - "3000:3000"
+    volumes:
+      - ../exchange_data/grafana-data:/var/lib/grafana
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # influxdb:
+  #   image: influxdb:latest
+  #   container_name: influxdb
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8086:8086"
+  #   environment:
+  #     - DOCKER_INFLUXDB_INIT_MODE=setup
+  #     - DOCKER_INFLUXDB_INIT_USERNAME=default
+  #     - DOCKER_INFLUXDB_INIT_PASSWORD=exchange
+  #     - DOCKER_INFLUXDB_INIT_ORG=myorg
+  #     - DOCKER_INFLUXDB_INIT_BUCKET=mybucket
+  #     - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=mytoken
+  #   volumes:
+  #     - ../exchange_data/influxdb_data:/var/lib/influxdb2
+
+  # telegraf:
+  #   image: telegraf:1.27
+  #   restart: unless-stopped
+  #   container_name: telegraf
+  #   volumes:
+  #     - ./telegraf.conf:/etc/telegraf/telegraf.conf:ro
+  #   depends_on:
+  #     - mysql
+  #     - influxdb
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    command: >
+      postgres
+      -c shared_preload_libraries=timescaledb,pg_stat_statements
+      
+    container_name: timescaledb
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=default
+      - POSTGRES_PASSWORD=1234
+      - POSTGRES_DB=timescaledb
+    volumes:
+      - ../exchange_data/timescaledb_data:/var/lib/postgresql/data
+
+networks:
+  outside:
+    external: true
