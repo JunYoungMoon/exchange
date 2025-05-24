@@ -8,11 +8,12 @@ import lombok.Getter;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Service;
-import org.springframework.beans.factory.annotation.Value;
+import reactor.core.publisher.Mono;
 
 import java.io.IOException;
 import java.math.BigDecimal;
@@ -31,17 +32,10 @@ public class MatchingServiceV6D implements MatchingService {
     private static final String UNMATCH_STREAM_KEY = "v6d:stream:unmatched";
     private static final String PARTIAL_MATCHED_STREAM_KEY = "v6d:stream:partialMatched";
     private static final String IDEMPOTENCY_KEY = "v6d:idempotency:orders";
-    private static final String ORDERBOOK_BIDS_KEY = "v6d:orderbook:%s:bids";
-    private static final String ORDERBOOK_ASKS_KEY = "v6d:orderbook:%s:asks";
-    private static final String COLD_DATA_REQUEST_STREAM_KEY = "v6d:stream:cold_data_request";
-    private static final String COLD_DATA_STATUS_KEY = "v6d:cold_data_status:%s";
-    private static final String PENDING_ORDERS_KEY = "v6d:pending_orders";
-    private static final String CLOSING_PRICE_KEY = "market:closing_price:%s";
-    
-    @Value("${matching.price-diff-threshold:0.3}")
-    private double priceDiffThreshold; // 기본값 30%
 
     private final RedisTemplate<String, String> redisTemplate;
+    private final ReactiveRedisTemplate<String, String> reactiveRedisTemplate;
+
     private final RedisScript<List<Object>> matchingScript;
 
     @Override
@@ -49,8 +43,9 @@ public class MatchingServiceV6D implements MatchingService {
         return MatchingVersion.V6D;
     }
 
-    public MatchingServiceV6D(RedisTemplate<String, String> redisTemplate) {
+    public MatchingServiceV6D(RedisTemplate<String, String> redisTemplate, ReactiveRedisTemplate<String, String>  reactiveRedisTemplate) {
         this.redisTemplate = redisTemplate;
+        this.reactiveRedisTemplate = reactiveRedisTemplate;
 
         // Lua 스크립트 로드
         DefaultRedisScript<List<Object>> script = new DefaultRedisScript<>();
@@ -76,12 +71,21 @@ public class MatchingServiceV6D implements MatchingService {
         matchingProcess(matchingOrder);
     }
 
+    @Override
+    public Mono<Void> matchOrdersReactive(CreateMatchingCommand command) {
+        MatchingOrder matchingOrder = MatchingOrder.fromCommand(command);
+
+        log.info("{} 주문접수 (리액티브) : {}원 {}개 (주문ID: {})",
+                matchingOrder.getOrderType(), matchingOrder.getPrice(),
+                matchingOrder.getQuantity(), matchingOrder.getUserId());
+
+        return matchingProcessReactive(matchingOrder);
+    }
+
     /**
      * 주문 매칭 프로세스 시작
      */
     private void matchingProcess(MatchingOrder order) {
-        String tradingPair = order.getTradingPair();
-
         String oppositeOrderKey, currentOrderKey;
 
         if (OrderType.BUY.equals(order.getOrderType())) {
@@ -92,16 +96,6 @@ public class MatchingServiceV6D implements MatchingService {
             currentOrderKey = SELL_ORDER_KEY + order.getTradingPair();
         }
 
-        // 호가 리스트 키 생성
-        String bidOrderbookKey = String.format(ORDERBOOK_BIDS_KEY, tradingPair);
-        String askOrderbookKey = String.format(ORDERBOOK_ASKS_KEY, tradingPair);
-
-        // 콜드 데이터 관련 키 생성
-        String coldDataStatusKey = String.format(COLD_DATA_STATUS_KEY, tradingPair);
-
-        // 종가 데이터 관련 키 생성
-        String closingPriceKey = String.format(CLOSING_PRICE_KEY, tradingPair);
-        
         // 타임스탬프가 없으면 현재 시간 설정
         if (order.getTimestamp() == null) {
             order.setTimestamp(System.currentTimeMillis());
@@ -113,33 +107,67 @@ public class MatchingServiceV6D implements MatchingService {
         // 부분 체결을 위한 새 ID 생성
         String partialOrderId = UUID.randomUUID().toString();
 
-
         // Lua 스크립트 실행
         redisTemplate.execute(
-                matchingScript,
-                Arrays.asList(
-                        oppositeOrderKey,              // KEYS[1]
-                        currentOrderKey,               // KEYS[2]
-                        MATCH_STREAM_KEY,              // KEYS[3]
-                        UNMATCH_STREAM_KEY,            // KEYS[4]
-                        PARTIAL_MATCHED_STREAM_KEY,    // KEYS[5]
-                        IDEMPOTENCY_KEY,               // KEYS[6]
-                        bidOrderbookKey,               // KEYS[7]
-                        askOrderbookKey,               // KEYS[8]
-                        COLD_DATA_REQUEST_STREAM_KEY,  // KEYS[9]
-                        coldDataStatusKey,             // KEYS[10]
-                        PENDING_ORDERS_KEY,            // KEYS[11]
-                        closingPriceKey                // KEYS[12]
-                ),
-                order.getOrderType().toString(),  // ARGV[1]
-                order.getPrice().toString(),      // ARGV[2]
-                order.getQuantity().toString(),   // ARGV[3]
-                orderDetails,                     // ARGV[4]
-                order.getTradingPair(),           // ARGV[5]
-                order.getOrderId().toString(),    // ARGV[6]
-                partialOrderId,                   // ARGV[7]
-                String.valueOf(priceDiffThreshold) // ARGV[8]
+            matchingScript,
+            Arrays.asList(
+                    oppositeOrderKey,
+                    currentOrderKey,
+                    MATCH_STREAM_KEY,
+                    UNMATCH_STREAM_KEY,
+                    PARTIAL_MATCHED_STREAM_KEY,
+                    IDEMPOTENCY_KEY
+            ),
+            order.getOrderType().toString(),
+            order.getPrice().toString(),
+            order.getQuantity().toString(),
+            orderDetails,
+            order.getTradingPair(),
+            order.getOrderId().toString(),
+            partialOrderId
         );
+    }
+
+    private Mono<Void> matchingProcessReactive(MatchingOrder order) {
+        String oppositeOrderKey, currentOrderKey;
+
+        if (OrderType.BUY.equals(order.getOrderType())) {
+            oppositeOrderKey = SELL_ORDER_KEY + order.getTradingPair();
+            currentOrderKey = BUY_ORDER_KEY + order.getTradingPair();
+        } else {
+            oppositeOrderKey = BUY_ORDER_KEY + order.getTradingPair();
+            currentOrderKey = SELL_ORDER_KEY + order.getTradingPair();
+        }
+
+        if (order.getTimestamp() == null) {
+            order.setTimestamp(System.currentTimeMillis());
+        }
+
+        String orderDetails = serializeOrder(order);
+        String partialOrderId = UUID.randomUUID().toString();
+
+        List<String> keys = Arrays.asList(
+                oppositeOrderKey,
+                currentOrderKey,
+                MATCH_STREAM_KEY,
+                UNMATCH_STREAM_KEY,
+                PARTIAL_MATCHED_STREAM_KEY,
+                IDEMPOTENCY_KEY
+        );
+
+        List<String> args = Arrays.asList(
+                order.getOrderType().toString(),
+                order.getPrice().toString(),
+                order.getQuantity().toString(),
+                orderDetails,
+                order.getTradingPair(),
+                order.getOrderId().toString(),
+                partialOrderId
+        );
+
+        return reactiveRedisTemplate
+                .execute(matchingScript, keys, args)
+                .then();
     }
 
     /**

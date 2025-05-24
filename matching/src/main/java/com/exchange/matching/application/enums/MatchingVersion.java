@@ -12,8 +12,7 @@ public enum MatchingVersion {
     V6A("v6a", false),
     V6B("v6b", false),
     V6C("v6c", false),
-    V6D("v6d", false),
-    V7("v7", false);
+    V6D("v6d", false);
 
     @Getter
     private final String code;

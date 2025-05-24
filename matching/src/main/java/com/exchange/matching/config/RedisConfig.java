@@ -7,13 +7,17 @@ import org.redisson.api.RedissonClient;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.ReactiveRedisConnectionFactory;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.connection.RedisStandaloneConfiguration;
 import org.springframework.data.redis.connection.lettuce.LettuceConnectionFactory;
+import org.springframework.data.redis.core.ReactiveRedisTemplate;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.serializer.Jackson2JsonRedisSerializer;
+import org.springframework.data.redis.serializer.RedisSerializationContext;
 import org.springframework.data.redis.serializer.RedisSerializer;
 import org.redisson.config.Config;
+import org.springframework.data.redis.serializer.StringRedisSerializer;
 
 @Configuration
 public class RedisConfig {
@@ -63,5 +67,21 @@ public class RedisConfig {
 
         redisson = Redisson.create(config);
         return redisson;
+    }
+
+    @Bean
+    public ReactiveRedisTemplate<String, String> reactiveRedisTemplate(
+            ReactiveRedisConnectionFactory factory) {
+        StringRedisSerializer keySerializer = new StringRedisSerializer();
+        StringRedisSerializer valueSerializer = new StringRedisSerializer();
+
+        RedisSerializationContext.RedisSerializationContextBuilder<String, String> builder =
+                RedisSerializationContext.newSerializationContext(keySerializer);
+
+        RedisSerializationContext<String, String> context = builder
+                .value(valueSerializer)
+                .build();
+
+        return new ReactiveRedisTemplate<>(factory, context);
     }
 }

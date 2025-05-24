@@ -13,7 +13,7 @@ import org.springframework.stereotype.Component;
 import com.exchange.matching.util.MetricsCollector;
 
 @Slf4j
-@Component
+//@Component
 @RequiredArgsConstructor
 public class EventConsumer {
     private final MatchingApplicationService matchingService;
@@ -35,15 +35,15 @@ public class EventConsumer {
                     "user-to-matching.execute-order-delivery.v6d"
             },
             containerFactory = "orderDeliveryKafkaListenerContainerFactory",
-            concurrency = "3"
+            concurrency = "10"
     )
     public void consume(ConsumerRecord<String, KafkaMatchingEvent> record) {
         // 캐싱된 상태를 즉시 확인 (네트워크 호출 없음)
-        if (!healthMonitor.isHealthy()) {
-            log.info("Receive 서버 상태 이상 감지: 처리 불가 메시지를 재시도 큐로 전송합니다.");
-            kafkaTemplate.send("matching-to-matching.execute-receiver-unavailable.retry", record.key(), record.value());
-            return;
-        }
+//        if (!healthMonitor.isHealthy()) {
+//            log.info("Receive 서버 상태 이상 감지: 처리 불가 메시지를 재시도 큐로 전송합니다.");
+//            kafkaTemplate.send("matching-to-matching.execute-receiver-unavailable.retry", record.key(), record.value());
+//            return;
+//        }
 
         String topic = record.topic();
         MatchingVersion version = extractVersionFromTopic(topic);
