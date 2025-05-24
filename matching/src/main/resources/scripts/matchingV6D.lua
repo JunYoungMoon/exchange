@@ -3,7 +3,7 @@
 -- KEYS[2]: 현재 주문 키 (매수면 BUY_ORDER_KEY, 매도면 SELL_ORDER_KEY)
 -- KEYS[3]: 매칭 Stream 키 (v6d:stream:matches)
 -- KEYS[4]: 미체결 Stream 키 (v6d:stream:unmatched)
--- KEYS[5]: 멱등성 체크를 위한 키 (v6d:idempotency:orders)
+-- KEYS[5]: 부분체결 Stream 키 (v6d:stream:partialMatched)
 -- KEYS[6]: 멱등성 체크를 위한 키 (v6d:idempotency:orders)
 -- KEYS[7]: 매수 호가 리스트 키 (v6d:orderbook:{tradingPair}:bids)
 -- KEYS[8]: 매도 호가 리스트 키 (v6d:orderbook:{tradingPair}:asks)

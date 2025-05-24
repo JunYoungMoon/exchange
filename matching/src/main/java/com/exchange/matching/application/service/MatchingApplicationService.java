@@ -7,6 +7,7 @@ import com.exchange.matching.util.LockManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Mono;
 
 @Service
 @RequiredArgsConstructor
@@ -24,6 +25,14 @@ public class MatchingApplicationService {
         } else {
             executeMatching(command, version);
         }
+    }
+
+    public Mono<Void> processMatchingReactive(CreateMatchingCommand command, MatchingVersion version) {
+        return executeMatchingReactive(command, version);
+    }
+
+    private Mono<Void> executeMatchingReactive(CreateMatchingCommand command, MatchingVersion version) {
+        return serviceRegistry.getService(version).matchOrdersReactive(command);
     }
 
     private void executeMatching(CreateMatchingCommand command, MatchingVersion version) {
