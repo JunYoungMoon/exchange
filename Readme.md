@@ -45,7 +45,7 @@
 - 강타입 언어의 컴파일 타임 체크를 통한 데이터 안정성 확보
 
 
-### env.properties 설정
+### env.properties 설정 방법
 ```bash
 ## 프로젝트 디렉토리로 이동
 cd matching/src/main/resources/properties
@@ -72,16 +72,16 @@ CASSANDRA_NAME=default
 CASSANDRA_PASSWORD=1234
 ```
 
-### Docker Compose 실행
+### Docker Compose 실행 방법
 ```bash
 # docker 디렉토리로 이동
 cd docker
 
-# 기본 서비스 실행
+# default compose 실행
 docker compose -p default -f docker-compose.default.yml up -d
 # 다른 compose 파일도 동일한 방법으로 실행가능
 ```
-### cdc 실행
+### cdc 실행 방법
 
 ```bash
 # cdc 디렉토리로 이동
@@ -106,6 +106,26 @@ java --add-exports java.base/jdk.internal.misc=ALL-UNNAMED \
 --add-opens jdk.management/com.sun.management.internal=ALL-UNNAMED \
 --add-opens=java.base/java.io=ALL-UNNAMED \
 -jar debezium-connector-cassandra-5-3.1.1.Final-jar-with-dependencies.jar ./config.properties
+```
+
+redis 클러스터 구성 방법
+```bash
+# docker 디렉토리로 이동
+cd docker
+
+# redis compose 실행
+docker compose -p redis -f docker-compose.redis.yml up -d
+
+# localhost는 임시 주소이며 외부 접근 가능 IP로 설정이 필요 redis.conf의 cluster-announce-ip도 동일하게 설정필요
+sudo docker exec -it redis-node1 redis-cli -a '비밀번호' --cluster create localhost:7001 localhost:7002 localhost:7003 --cluster-replicas 0
+
+# 클러스터 등록이 잘못 되었을때 리셋
+sudo docker exec -it redis-node1 redis-cli -a '비밀번호' -p 7001 CLUSTER RESET
+sudo docker exec -it redis-node2 redis-cli -a '비밀번호' -p 7002 CLUSTER RESET
+sudo docker exec -it redis-node3 redis-cli -a '비밀번호' -p 7003 CLUSTER RESET
+sudo docker exec -it redis-node1 redis-cli -a '비밀번호' -p 7001 FLUSHALL
+sudo docker exec -it redis-node2 redis-cli -a '비밀번호' -p 7002 FLUSHALL
+sudo docker exec -it redis-node3 redis-cli -a '비밀번호' -p 7003 FLUSHALL
 ```
 
 ### 참고 자료
