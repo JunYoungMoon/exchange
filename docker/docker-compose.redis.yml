@@ -1,0 +1,46 @@
+services:
+  redis-node1:
+    image: redis:latest
+    container_name: redis-node1
+    volumes:
+      - ../exchange_data/redis_cluster/node1:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "7001:7001"
+      - "17001:17001"
+    command: redis-server /usr/local/etc/redis/redis.conf --port 7001 --cluster-announce-port 7001 --cluster-announce-bus-port 17001
+    networks:
+      - redis-cluster-net
+    restart: unless-stopped
+
+  redis-node2:
+    image: redis:latest
+    container_name: redis-node2
+    volumes:
+      - ../exchange_data/redis_cluster/node2:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "7002:7002"
+      - "17002:17002"
+    command: redis-server /usr/local/etc/redis/redis.conf --port 7002 --cluster-announce-port 7002 --cluster-announce-bus-port 17002
+    networks:
+      - redis-cluster-net
+    restart: unless-stopped
+
+  redis-node3:
+    image: redis:latest
+    container_name: redis-node3
+    volumes:
+      - ../exchange_data/redis_cluster/node3:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    ports:
+      - "7003:7003"
+      - "17003:17003"
+    command: redis-server /usr/local/etc/redis/redis.conf --port 7003 --cluster-announce-port 7003 --cluster-announce-bus-port 17003
+    networks:
+      - redis-cluster-net
+    restart: unless-stopped
+
+networks:
+  redis-cluster-net:
+    driver: bridge
