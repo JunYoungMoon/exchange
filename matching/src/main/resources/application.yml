@@ -26,11 +26,19 @@ spring:
     consumer:
       auto-offset-reset: earliest
 
+#  data:
+#    redis:
+#      host: ${REDIS_HOST}
+##      host: localhost
+#      port: 7001
+#      username: ${REDIS_NAME}
+#      password: ${REDIS_PASSWORD}
+
   data:
     redis:
-      host: ${REDIS_HOST}
-#      host: localhost
-      port: 6379
+      cluster:
+        nodes: ${REDIS_HOST}:7001
+        max-redirects: 3
       username: ${REDIS_NAME}
       password: ${REDIS_PASSWORD}
 
