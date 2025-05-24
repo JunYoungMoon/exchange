@@ -6,6 +6,7 @@ import com.exchange.receive.infrastructure.dto.KafkaMatchingEvent;
 import com.exchange.receive.infrastructure.dto.KafkaOrderStoreEvent;
 import com.exchange.receive.infrastructure.enums.OperationType;
 import com.exchange.receive.infrastructure.enums.OrderType;
+import com.exchange.receive.infrastructure.enums.TradingPair;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Range;
@@ -30,18 +31,19 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class RedisStreamRecoveryService {
+public class ClusteredRedisStreamRecoveryService {
 
     private final ExecutorService kafkaExecutorService = Executors.newFixedThreadPool(20);
+    private final ScheduledExecutorService scheduledExecutorService = Executors.newScheduledThreadPool(5);
 
-    private static final String MATCH_STREAM_KEY = "v6d:stream:matches";
-    private static final String UNMATCH_STREAM_KEY = "v6d:stream:unmatched";
-    private static final String PARTIAL_MATCHED_STREAM_KEY = "v6d:stream:partialMatched";
+    // Kafka 토픽
     private static final String MATCH_KAFKA_TOPIC = "matching-to-order_completed.execute-order-matched";
     private static final String UNMATCH_KAFKA_TOPIC = "matching-to-order_completed.execute-order-unmatched";
     private static final String PARTIAL_MATCHED_KAFKA_TOPIC = "user-to-matching.execute-order-delivery.v6d";
@@ -51,7 +53,7 @@ public class RedisStreamRecoveryService {
     private final ShardCalculator shardCalculator;
 
     private String consumerGroupName;
-    private AtomicInteger pendingCount = new AtomicInteger(0);
+    private final AtomicInteger pendingCount = new AtomicInteger(0);
     private volatile boolean shuttingDown = false;
 
     /**
@@ -59,17 +61,38 @@ public class RedisStreamRecoveryService {
      */
     public void initialize(String consumerGroupName) {
         this.consumerGroupName = consumerGroupName;
-        // Pending 메시지 처리 스케줄러 시작
-        new Thread(this::processPendingMessages).start();
-        log.info("Redis Stream Recovery Service 초기화 완료 - Group: {}", consumerGroupName);
+
+        // 각 거래쌍별로 독립적인 Pending 메시지 처리 스케줄러 시작
+        for (TradingPair tradingPair : TradingPair.values()) {
+            scheduledExecutorService.scheduleWithFixedDelay(
+                    () -> processPendingMessagesForTradingPair(tradingPair),
+                    30, // 초기 지연
+                    30, // 실행 간격 (30초)
+                    TimeUnit.SECONDS
+            );
+        }
+
+        log.info("클러스터 Redis Stream Recovery Service 초기화 완료 - Group: {}", consumerGroupName);
     }
 
     /**
      * 서비스 종료
      */
     public void shutdown() {
-        log.info("Redis Stream Recovery Service 종료 중...");
+        log.info("클러스터 Redis Stream Recovery Service 종료 중...");
         shuttingDown = true;
+
+        // 스케줄러 종료
+        scheduledExecutorService.shutdown();
+
+        try {
+            if (!scheduledExecutorService.awaitTermination(10, TimeUnit.SECONDS)) {
+                scheduledExecutorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            scheduledExecutorService.shutdownNow();
+        }
 
         // 모든 pending 메시지가 처리될 때까지 대기 (최대 30초)
         int maxWaitSeconds = 30;
@@ -89,38 +112,36 @@ public class RedisStreamRecoveryService {
 
         // Executor service 종료
         kafkaExecutorService.shutdown();
-        log.info("Redis Stream Recovery Service 종료 완료");
+        log.info("클러스터 Redis Stream Recovery Service 종료 완료");
     }
 
     /**
-     * 주기적으로 Pending 메시지를 처리하는 스레드
+     * 특정 거래쌍의 모든 스트림에 대한 Pending 메시지 처리
      */
-    private void processPendingMessages() {
-        while (!shuttingDown) {
-            try {
-                // Match 스트림의 Pending 메시지 처리
-                processPendingMessagesForStream(MATCH_STREAM_KEY);
+    private void processPendingMessagesForTradingPair(TradingPair tradingPair) {
+        if (shuttingDown) {
+            return;
+        }
 
-                // Unmatch 스트림의 Pending 메시지 처리
-                processPendingMessagesForStream(UNMATCH_STREAM_KEY);
+        try {
+            log.debug("거래쌍 {} Pending 메시지 처리 시작", tradingPair.getSymbol());
 
-                // 부분 체결 스트림의 Pending 메시지 처리
-                processPendingMessagesForStream(PARTIAL_MATCHED_STREAM_KEY);
+            // 각 스트림의 Pending 메시지 처리
+            processPendingMessagesForStream(tradingPair.getMatchStreamKey(), tradingPair, StreamType.MATCH);
+            processPendingMessagesForStream(tradingPair.getUnmatchStreamKey(), tradingPair, StreamType.UNMATCH);
+            processPendingMessagesForStream(tradingPair.getPartialMatchedStreamKey(), tradingPair, StreamType.PARTIAL_MATCH);
 
-                // 30초 대기
-                Thread.sleep(30000);
-            } catch (Exception e) {
-                log.error("Pending 메시지 처리 중 오류", e);
-            }
+        } catch (Exception e) {
+            log.error("거래쌍 {} Pending 메시지 처리 중 오류", tradingPair.getSymbol(), e);
         }
     }
 
     /**
      * 특정 스트림의 Pending 메시지 처리
      */
-    private void processPendingMessagesForStream(String streamKey) {
+    private void processPendingMessagesForStream(String streamKey, TradingPair tradingPair, StreamType streamType) {
         try {
-            // 처리되지 않은 메시지 조회 (생성 후 5분 이상 경과된 메시지)
+            // 처리되지 않은 메시지 조회 (10분 이상 경과된 메시지)
             PendingMessages pendingMessages = redisTemplate.opsForStream()
                     .pending(streamKey, consumerGroupName, Range.unbounded(), 100);
 
@@ -128,13 +149,15 @@ public class RedisStreamRecoveryService {
                 return;
             }
 
-            log.info("{} 스트림에서 처리되지 않은 메시지 {} 개 발견", streamKey, pendingMessages.size());
+            log.info("거래쌍 {} {} 스트림에서 처리되지 않은 메시지 {} 개 발견",
+                    tradingPair.getSymbol(), streamType, pendingMessages.size());
 
             for (PendingMessage pending : pendingMessages) {
                 // 10분(600,000ms) 이상 지난 메시지만 재처리
                 if (pending.getElapsedTimeSinceLastDelivery().compareTo(Duration.ofMinutes(10)) > 0) {
                     String messageId = pending.getIdAsString();
-                    log.info("Pending 메시지 재처리: {} (지연: {}ms)", messageId, pending.getElapsedTimeSinceLastDelivery());
+                    log.info("거래쌍 {} Pending 메시지 재처리: {} (지연: {}ms)",
+                            tradingPair.getSymbol(), messageId, pending.getElapsedTimeSinceLastDelivery().toMillis());
 
                     // 메시지 다시 가져오기
                     List<MapRecord<String, Object, Object>> records = redisTemplate.opsForStream()
@@ -143,15 +166,19 @@ public class RedisStreamRecoveryService {
                     if (records != null && !records.isEmpty()) {
                         MapRecord<String, Object, Object> record = records.get(0);
 
-                        // 메시지 다시 처리 (스트림에 따라 다른 처리)
+                        // 메시지 다시 처리
                         pendingCount.incrementAndGet();
                         try {
-                            if (MATCH_STREAM_KEY.equals(streamKey)) {
-                                processRawMatchMessage(record);
-                            } else if (UNMATCH_STREAM_KEY.equals(streamKey)) {
-                                processRawUnmatchMessage(record);
-                            } else if (PARTIAL_MATCHED_STREAM_KEY.equals(streamKey)) {
-                                processRawPartialMatchMessage(record);
+                            switch (streamType) {
+                                case MATCH:
+                                    processRawMatchMessage(record, tradingPair);
+                                    break;
+                                case UNMATCH:
+                                    processRawUnmatchMessage(record, tradingPair);
+                                    break;
+                                case PARTIAL_MATCH:
+                                    processRawPartialMatchMessage(record, tradingPair);
+                                    break;
                             }
                         } finally {
                             pendingCount.decrementAndGet();
@@ -160,22 +187,30 @@ public class RedisStreamRecoveryService {
                 }
             }
         } catch (Exception e) {
-            log.error("{} 스트림의 Pending 메시지 처리 중 오류", streamKey, e);
+            log.error("거래쌍 {} {} 스트림의 Pending 메시지 처리 중 오류",
+                    tradingPair.getSymbol(), streamType, e);
         }
     }
 
     /**
-     * 일반 MapRecord 처리 (pending 매칭 메시지 처리용)
+     * 스트림 타입 열거형
      */
-    private void processRawMatchMessage(MapRecord<String, Object, Object> record) {
+    private enum StreamType {
+        MATCH, UNMATCH, PARTIAL_MATCH
+    }
+
+    /**
+     * 매칭 메시지 재처리
+     */
+    private void processRawMatchMessage(MapRecord<String, Object, Object> record, TradingPair tradingPair) {
         try {
             String messageId = record.getId().getValue();
             Map<String, String> body = convertMapEntriesToMap(record.getValue());
+            String streamKey = tradingPair.getMatchStreamKey();
 
             Instant instant = Instant.ofEpochSecond(Long.parseLong(body.get("timestamp")));
             LocalDate localDate = instant.atZone(ZoneId.systemDefault()).toLocalDate();
 
-            // 매칭된 주문 정보를 하나의 DTO로 생성
             KafkaMatchedOrderEvent matchedEvent = KafkaMatchedOrderEvent.builder()
                     .tradingPair(body.get("tradingPair"))
                     .executionPrice(new BigDecimal(body.get("executionPrice")))
@@ -190,7 +225,6 @@ public class RedisStreamRecoveryService {
                     .sellShard(shardCalculator.calculateShard(UUID.fromString(body.get("sellOrderId"))))
                     .build();
 
-            // 매칭 이벤트를 Kafka로 전송
             CompletableFuture<SendResult<String, Object>> future =
                     CompletableFuture.supplyAsync(() -> {
                         try {
@@ -200,31 +234,34 @@ public class RedisStreamRecoveryService {
                         }
                     }, kafkaExecutorService);
 
-            // 전송 완료 후 처리
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
-                    // 성공 시 Redis에서 ACK 처리
-                    redisTemplate.opsForStream().acknowledge(MATCH_STREAM_KEY, consumerGroupName, messageId);
-                    log.info("원시 매칭 메시지 Kafka 전송 완료: {}", messageId);
+                    redisTemplate.opsForStream().acknowledge(streamKey, consumerGroupName, messageId);
+                    log.info("거래쌍 {} 복구 매칭 메시지 Kafka 전송 완료: {}", tradingPair.getSymbol(), messageId);
                 } else {
-                    // 실패 시 로그만 남김 (Redis에서 ACK 하지 않음)
-                    log.error("원시 매칭 메시지 Kafka 전송 실패: {}", messageId, ex);
+                    log.error("거래쌍 {} 복구 매칭 메시지 Kafka 전송 실패: {}", tradingPair.getSymbol(), messageId, ex);
                 }
             });
         } catch (Exception e) {
-            log.error("원시 매칭 메시지 처리 오류", e);
+            log.error("거래쌍 {} 복구 매칭 메시지 처리 오류", tradingPair.getSymbol(), e);
         }
     }
 
     /**
-     * 일반 MapRecord 처리 (pending 미체결 메시지 처리용)
+     * 미체결 메시지 재처리
      */
-    private void processRawUnmatchMessage(MapRecord<String, Object, Object> record) {
+    private void processRawUnmatchMessage(MapRecord<String, Object, Object> record, TradingPair tradingPair) {
         try {
             String messageId = record.getId().getValue();
             Map<String, String> body = convertMapEntriesToMap(record.getValue());
+            String streamKey = tradingPair.getUnmatchStreamKey();
 
-            Instant instant = Instant.ofEpochSecond(Long.parseLong(body.get("timestamp")));
+            long timestamp = Long.parseLong(body.get("timestamp"));
+            long processedTimestamp = "BUY".equals(body.get("orderType"))
+                    ? 9999999999999L - timestamp
+                    : timestamp;
+
+            Instant instant = Instant.ofEpochMilli(processedTimestamp);
             LocalDate localDate = instant.atZone(ZoneId.systemDefault()).toLocalDate();
 
             KafkaOrderStoreEvent event = KafkaOrderStoreEvent.builder()
@@ -238,9 +275,9 @@ public class RedisStreamRecoveryService {
                     .operationType(OperationType.valueOf(body.get("operation")))
                     .shard(shardCalculator.calculateShard(UUID.fromString(body.get("orderId"))))
                     .yearMonthDate(localDate)
+                    .createdAt(instant)
                     .build();
 
-            // Kafka로 메시지 전송
             CompletableFuture<SendResult<String, Object>> future =
                     CompletableFuture.supplyAsync(() -> {
                         try {
@@ -252,26 +289,25 @@ public class RedisStreamRecoveryService {
 
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
-                    // 성공 시 Redis에서 ACK 처리
-                    redisTemplate.opsForStream().acknowledge(UNMATCH_STREAM_KEY, consumerGroupName, messageId);
-                    log.info("원시 미체결 메시지 Kafka 전송 완료: {}", messageId);
+                    redisTemplate.opsForStream().acknowledge(streamKey, consumerGroupName, messageId);
+                    log.info("거래쌍 {} 복구 미체결 메시지 Kafka 전송 완료: {}", tradingPair.getSymbol(), messageId);
                 } else {
-                    // 실패 시 로그만 남김 (Redis에서 ACK 하지 않음)
-                    log.error("원시 미체결 메시지 Kafka 전송 실패: {}", messageId, ex);
+                    log.error("거래쌍 {} 복구 미체결 메시지 Kafka 전송 실패: {}", tradingPair.getSymbol(), messageId, ex);
                 }
             });
         } catch (Exception e) {
-            log.error("원시 미체결 메시지 처리 오류", e);
+            log.error("거래쌍 {} 복구 미체결 메시지 처리 오류", tradingPair.getSymbol(), e);
         }
     }
 
     /**
-     * 일반 MapRecord 처리 (pending 부분체결 메시지 처리용)
+     * 부분체결 메시지 재처리
      */
-    private void processRawPartialMatchMessage(MapRecord<String, Object, Object> record) {
+    private void processRawPartialMatchMessage(MapRecord<String, Object, Object> record, TradingPair tradingPair) {
         try {
             String messageId = record.getId().getValue();
             Map<String, String> body = convertMapEntriesToMap(record.getValue());
+            String streamKey = tradingPair.getPartialMatchedStreamKey();
 
             KafkaMatchingEvent event = KafkaMatchingEvent.builder()
                     .tradingPair(body.get("tradingPair"))
@@ -282,22 +318,19 @@ public class RedisStreamRecoveryService {
                     .orderId(UUID.fromString(body.get("orderId")))
                     .build();
 
-            // Kafka로 메시지 전송
             CompletableFuture<SendResult<String, Object>> future =
                     kafkaTemplate.send(PARTIAL_MATCHED_KAFKA_TOPIC, body.get("orderId"), event);
 
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
-                    // 성공 시 Redis에서 ACK 처리
-                    redisTemplate.opsForStream().acknowledge(PARTIAL_MATCHED_STREAM_KEY, consumerGroupName, messageId);
-                    log.info("원시 부분체결 메시지 Kafka 전송 완료: {}", messageId);
+                    redisTemplate.opsForStream().acknowledge(streamKey, consumerGroupName, messageId);
+                    log.info("거래쌍 {} 복구 부분체결 메시지 Kafka 전송 완료: {}", tradingPair.getSymbol(), messageId);
                 } else {
-                    // 실패 시 로그만 남김 (Redis에서 ACK 하지 않음)
-                    log.error("원시 부분체결 메시지 Kafka 전송 실패: {}", messageId, ex);
+                    log.error("거래쌍 {} 복구 부분체결 메시지 Kafka 전송 실패: {}", tradingPair.getSymbol(), messageId, ex);
                 }
             });
         } catch (Exception e) {
-            log.error("원시 부분체결 메시지 처리 오류", e);
+            log.error("거래쌍 {} 복구 부분체결 메시지 처리 오류", tradingPair.getSymbol(), e);
         }
     }
 
@@ -306,11 +339,9 @@ public class RedisStreamRecoveryService {
      */
     private Map<String, String> convertMapEntriesToMap(Map<Object, Object> entries) {
         Map<String, String> result = new HashMap<>();
-
         for (Map.Entry<Object, Object> entry : entries.entrySet()) {
             result.put(entry.getKey().toString(), entry.getValue().toString());
         }
-
         return result;
     }
 }

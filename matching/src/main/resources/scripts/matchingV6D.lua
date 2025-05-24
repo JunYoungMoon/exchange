@@ -1,16 +1,18 @@
 -- 주문 매칭 Lua 스크립트
--- KEYS[1]: 반대 주문 키 (매수면 SELL_ORDER_KEY, 매도면 BUY_ORDER_KEY)
--- KEYS[2]: 현재 주문 키 (매수면 BUY_ORDER_KEY, 매도면 SELL_ORDER_KEY)
--- KEYS[3]: 매칭 Stream 키 (v6d:stream:matches)
--- KEYS[4]: 미체결 Stream 키 (v6d:stream:unmatched)
--- KEYS[5]: 부분체결 Stream 키 (v6d:stream:partialMatched)
--- KEYS[6]: 멱등성 체크를 위한 키 (v6d:idempotency:orders)
--- KEYS[7]: 매수 호가 리스트 키 (v6d:orderbook:{tradingPair}:bids)
--- KEYS[8]: 매도 호가 리스트 키 (v6d:orderbook:{tradingPair}:asks)
--- KEYS[9]: 콜드 데이터 요청 스트림 키 (v6d:stream:cold_data_request)
--- KEYS[10]: 콜드 데이터 상태 키 (v6d:cold_data_status:{tradingPair})
--- KEYS[11]: 대기 주문 키 (v6d:pending_orders)
--- KEYS[12]: 일일 종가 키 (market:closing_price:{tradingPair})
+-- KEYS[1]: 반대 주문 키
+-- KEYS[2]: 현재 주문 키
+-- KEYS[3]: 매칭 Stream 키
+-- KEYS[4]: 미체결 Stream 키
+-- KEYS[5]: 부분체결 Stream 키
+-- KEYS[6]: 멱등성 체크를 위한 키
+-- KEYS[7]: 매수 호가 리스트 키
+-- KEYS[8]: 매도 호가 리스트 키
+-- KEYS[9]: 콜드 데이터 요청 스트림 키
+-- KEYS[10]: 콜드 데이터 상태 키
+-- KEYS[11]: 대기 주문 키
+-- KEYS[12]: 일일 종가 키
+-- KEYS[13]: 업데이트 키 접두사
+-- KEYS[14]: 업데이트 인덱스 키
 
 -- ARGV[1]: 주문 타입 (BUY 또는 SELL)
 -- ARGV[2]: 주문 가격
@@ -33,6 +35,8 @@ local coldDataRequestStreamKey = KEYS[9]
 local coldDataStatusKey = KEYS[10]
 local pendingOrdersKey = KEYS[11]
 local closingPriceKey = KEYS[12]
+local updateKeyPrefix = KEYS[13]
+local updateIndexKey = KEYS[14]
 
 local orderType = ARGV[1]
 local orderPrice = tonumber(ARGV[2])
@@ -247,7 +251,7 @@ local updatedCurrentDetails = ""
 -- 반대 주문 데이터 공통 필드
 local orderOperation = remainingOppositeQuantity > 0 and "UPDATE" or "DELETE"
 local orderQuantity = remainingOppositeQuantity > 0 and tostring(remainingOppositeQuantity) or "0"
-local updateKey = "v6d:order:pending-updates:" .. oppositeOrder.orderId
+local updateKey = updateKeyPrefix .. ":" .. oppositeOrder.orderId
 
 -- 반대 주문 업데이트
 if remainingOppositeQuantity > 0 then
@@ -279,7 +283,7 @@ redis.call("HSET", updateKey,
 )
 
 -- 해시셋 전용 인덱스에 추가
-redis.call("SADD", "v6d:order:pending-updates:index", oppositeOrder.orderId)
+redis.call("SADD", updateIndexKey, oppositeOrder.orderId)
 
 -- 현재 주문에 남은 수량이 있는 경우
 if remainingOrderQuantity > 0 then

@@ -9,8 +9,9 @@ spring:
 
   data:
     redis:
-      host: ${REDIS_HOST}
-      port: 6379
+      cluster:
+        nodes: ${REDIS_HOST}:7001
+        max-redirects: 3
       username: ${REDIS_NAME}
       password: ${REDIS_PASSWORD}
 

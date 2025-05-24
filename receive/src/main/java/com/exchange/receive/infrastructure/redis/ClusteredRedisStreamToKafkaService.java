@@ -6,6 +6,7 @@ import com.exchange.receive.infrastructure.dto.KafkaMatchingEvent;
 import com.exchange.receive.infrastructure.dto.KafkaOrderStoreEvent;
 import com.exchange.receive.infrastructure.enums.OperationType;
 import com.exchange.receive.infrastructure.enums.OrderType;
+import com.exchange.receive.infrastructure.enums.TradingPair;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +15,6 @@ import org.springframework.data.redis.connection.stream.Consumer;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.connection.stream.ReadOffset;
 import org.springframework.data.redis.connection.stream.StreamOffset;
-import org.springframework.data.redis.core.RedisCallback;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.stream.StreamListener;
 import org.springframework.data.redis.stream.StreamMessageListenerContainer;
@@ -26,40 +26,38 @@ import org.springframework.stereotype.Service;
 import java.math.BigDecimal;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
-import java.security.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @Slf4j
 @RequiredArgsConstructor
-public class RedisStreamToKafkaService {
+public class ClusteredRedisStreamToKafkaService {
 
     private final ExecutorService kafkaExecutorService = Executors.newFixedThreadPool(20);
 
-    private static final String MATCH_STREAM_KEY = "v6d:stream:matches";
-    private static final String UNMATCH_STREAM_KEY = "v6d:stream:unmatched";
-    private static final String PARTIAL_MATCHED_STREAM_KEY = "v6d:stream:partialMatched";
+    // Kafka 토픽
     private static final String MATCH_KAFKA_TOPIC = "matching-to-order_completed.execute-order-matched";
     private static final String UNMATCH_KAFKA_TOPIC = "matching-to-order_completed.execute-order-unmatched";
     private static final String PARTIAL_MATCHED_KAFKA_TOPIC = "user-to-matching.execute-order-delivery.v6d";
-    private static final String COLD_DATA_REQUEST_STREAM_KEY = "v6d:stream:cold_data_request";
 
     private final RedisTemplate<String, String> redisTemplate;
     private final KafkaTemplate<String, Object> kafkaTemplate;
-    private final RedisStreamRecoveryService recoveryService;
+    private final ClusteredRedisStreamRecoveryService recoveryService;
     private final ShardCalculator shardCalculator;
 
-    private StreamMessageListenerContainer<String, MapRecord<String, String, String>> listenerContainer;
-    private Subscription matchSubscription;
-    private Subscription unmatchSubscription;
-    private Subscription partialMatchSubscription;
-    private Subscription coldDataSubscription;
+    // 거래쌍별 리스너 컨테이너와 구독
+    private final Map<TradingPair, StreamMessageListenerContainer<String, MapRecord<String, String, String>>> listenerContainers = new HashMap<>();
+    private final Map<TradingPair, List<Subscription>> subscriptions = new HashMap<>();
 
     private String consumerGroupName;
     private AtomicInteger pendingCount = new AtomicInteger(0);
@@ -71,85 +69,122 @@ public class RedisStreamToKafkaService {
         String consumerName = hostname + "-" + System.currentTimeMillis();
         this.consumerGroupName = "matching-service-group";
 
-        // Consumer 그룹 생성 (존재하지 않는 경우에만)
-        createConsumerGroupIfNotExists(MATCH_STREAM_KEY, consumerGroupName);
-        createConsumerGroupIfNotExists(UNMATCH_STREAM_KEY, consumerGroupName);
-        createConsumerGroupIfNotExists(PARTIAL_MATCHED_STREAM_KEY, consumerGroupName);
-        createConsumerGroupIfNotExists(COLD_DATA_REQUEST_STREAM_KEY, consumerGroupName);
+        // 각 거래쌍에 대해 별도의 리스너 컨테이너 생성
+        for (TradingPair tradingPair : TradingPair.values()) {
+            initTradingPairStreams(tradingPair, consumerName);
+        }
 
-        // Listener 컨테이너 설정
+        // 복구 서비스 초기화
+        recoveryService.initialize(consumerGroupName);
+
+        log.info("클러스터 Redis Stream Consumer 시작 완료 - Group: {}, Consumer: {}", consumerGroupName, consumerName);
+    }
+
+    private void initTradingPairStreams(TradingPair tradingPair, String consumerName) {
+        log.info("거래쌍 {} 스트림 초기화 시작", tradingPair.getSymbol());
+
+        // 스트림 키들
+        String matchStreamKey = tradingPair.getMatchStreamKey();
+        String unmatchStreamKey = tradingPair.getUnmatchStreamKey();
+        String partialMatchedStreamKey = tradingPair.getPartialMatchedStreamKey();
+        String coldDataRequestStreamKey = tradingPair.getColdDataRequestStreamKey();
+
+        // Consumer 그룹 생성
+        createConsumerGroupIfNotExists(matchStreamKey, consumerGroupName);
+        createConsumerGroupIfNotExists(unmatchStreamKey, consumerGroupName);
+        createConsumerGroupIfNotExists(partialMatchedStreamKey, consumerGroupName);
+        createConsumerGroupIfNotExists(coldDataRequestStreamKey, consumerGroupName);
+
+        // 리스너 컨테이너 설정
         StreamMessageListenerContainer.StreamMessageListenerContainerOptions<String, MapRecord<String, String, String>> options =
                 StreamMessageListenerContainer.StreamMessageListenerContainerOptions
                         .builder()
                         .pollTimeout(Duration.ofMillis(100))
                         .batchSize(50)
-                        .executor(Executors.newFixedThreadPool(10))
-                        .errorHandler((e) -> log.info("Redis Streams Listener 종료"))
+                        .executor(Executors.newFixedThreadPool(5)) // 거래쌍별로 스레드 풀 분리
+                        .errorHandler((e) -> log.warn("Redis Streams Listener 오류 - {}: {}", tradingPair.getSymbol(), e.getMessage()))
                         .build();
 
-        this.listenerContainer = StreamMessageListenerContainer.create(
-                Objects.requireNonNull(redisTemplate.getConnectionFactory()),
-                options
-        );
+        StreamMessageListenerContainer<String, MapRecord<String, String, String>> container =
+                StreamMessageListenerContainer.create(
+                        Objects.requireNonNull(redisTemplate.getConnectionFactory()),
+                        options
+                );
 
-        // Match 스트림 구독
-        Consumer consumer = Consumer.from(consumerGroupName, consumerName);
+        // Consumer 생성
+        Consumer consumer = Consumer.from(consumerGroupName, consumerName + "-" + tradingPair.name());
 
-        this.matchSubscription = this.listenerContainer.receive(
+        // 구독 리스트
+        List<Subscription> tradingPairSubscriptions = new ArrayList<>();
+
+        // 각 스트림 구독
+        tradingPairSubscriptions.add(container.receive(
                 consumer,
-                StreamOffset.create(MATCH_STREAM_KEY, ReadOffset.lastConsumed()),
-                new MatchStreamListener()
-        );
+                StreamOffset.create(matchStreamKey, ReadOffset.lastConsumed()),
+                new MatchStreamListener(tradingPair)
+        ));
 
-        this.unmatchSubscription = this.listenerContainer.receive(
+        tradingPairSubscriptions.add(container.receive(
                 consumer,
-                StreamOffset.create(UNMATCH_STREAM_KEY, ReadOffset.lastConsumed()),
-                new UnmatchStreamListener()
-        );
+                StreamOffset.create(unmatchStreamKey, ReadOffset.lastConsumed()),
+                new UnmatchStreamListener(tradingPair)
+        ));
 
-        this.partialMatchSubscription = this.listenerContainer.receive(
+        tradingPairSubscriptions.add(container.receive(
                 consumer,
-                StreamOffset.create(PARTIAL_MATCHED_STREAM_KEY, ReadOffset.lastConsumed()),
-                new PartialStreamListener()
-        );
+                StreamOffset.create(partialMatchedStreamKey, ReadOffset.lastConsumed()),
+                new PartialStreamListener(tradingPair)
+        ));
 
-        this.coldDataSubscription = this.listenerContainer.receive(
+        tradingPairSubscriptions.add(container.receive(
                 consumer,
-                StreamOffset.create(COLD_DATA_REQUEST_STREAM_KEY, ReadOffset.lastConsumed()),
-                new ColdDataRequestListener()
-        );
+                StreamOffset.create(coldDataRequestStreamKey, ReadOffset.lastConsumed()),
+                new ColdDataRequestListener(tradingPair)
+        ));
 
         // 컨테이너 시작
-        this.listenerContainer.start();
-        log.info("Redis Stream Consumer 시작 - Group: {}, Consumer: {}", consumerGroupName, consumerName);
+        container.start();
 
-        // 복구 서비스 초기화
-        recoveryService.initialize(consumerGroupName);
+        // 저장
+        listenerContainers.put(tradingPair, container);
+        subscriptions.put(tradingPair, tradingPairSubscriptions);
+
+        log.info("거래쌍 {} 스트림 초기화 완료", tradingPair.getSymbol());
     }
 
     @PreDestroy
     public void shutdown() {
-        log.info("Redis Stream Consumer 종료 중...");
+        log.info("클러스터 Redis Stream Consumer 종료 중...");
 
         // 복구 서비스 종료
         recoveryService.shutdown();
 
-        if (matchSubscription != null) {
-            matchSubscription.cancel();
+        // 모든 거래쌍의 구독 취소
+        for (Map.Entry<TradingPair, List<Subscription>> entry : subscriptions.entrySet()) {
+            TradingPair tradingPair = entry.getKey();
+            List<Subscription> subs = entry.getValue();
+
+            log.info("거래쌍 {} 구독 취소 중...", tradingPair.getSymbol());
+            for (Subscription sub : subs) {
+                if (sub != null) {
+                    sub.cancel();
+                }
+            }
         }
-        if (unmatchSubscription != null) {
-            unmatchSubscription.cancel();
+
+        // 모든 리스너 컨테이너 종료
+        for (Map.Entry<TradingPair, StreamMessageListenerContainer<String, MapRecord<String, String, String>>> entry : listenerContainers.entrySet()) {
+            TradingPair tradingPair = entry.getKey();
+            StreamMessageListenerContainer<String, MapRecord<String, String, String>> container = entry.getValue();
+
+            log.info("거래쌍 {} 컨테이너 종료 중...", tradingPair.getSymbol());
+            if (container != null) {
+                container.stop();
+            }
         }
-        if (partialMatchSubscription != null) {
-            partialMatchSubscription.cancel();
-        }
-        if (coldDataSubscription != null) {
-            coldDataSubscription.cancel();
-        }
-        if (listenerContainer != null) {
-            listenerContainer.stop();
-        }
-        log.info("Redis Stream Consumer 종료 완료");
+
+        kafkaExecutorService.shutdown();
+        log.info("클러스터 Redis Stream Consumer 종료 완료");
     }
 
     private void createConsumerGroupIfNotExists(String streamKey, String groupName) {
@@ -168,11 +203,10 @@ public class RedisStreamToKafkaService {
             log.info("Consumer 그룹 생성: {} - {}", streamKey, groupName);
 
         } catch (Exception e) {
-            // 예외의 원인을 재귀적으로 검사
+            // BUSYGROUP 오류 처리
             Throwable cause = e;
             boolean isBusyGroupError = false;
 
-            // 모든 중첩된 예외를 확인
             while (cause != null) {
                 if (cause instanceof io.lettuce.core.RedisBusyException ||
                         (cause.getMessage() != null && cause.getMessage().contains("BUSYGROUP"))) {
@@ -183,9 +217,9 @@ public class RedisStreamToKafkaService {
             }
 
             if (isBusyGroupError) {
-                log.info("Consumer 그룹 이미 존재: {} - {}", streamKey, groupName);
+                log.debug("Consumer 그룹 이미 존재: {} - {}", streamKey, groupName);
             } else {
-                log.info("Consumer 그룹 생성 오류: {} - {}", streamKey, groupName, e);
+                log.warn("Consumer 그룹 생성 오류: {} - {}", streamKey, groupName, e);
             }
         }
     }
@@ -194,11 +228,17 @@ public class RedisStreamToKafkaService {
      * 매칭 스트림 리스너
      */
     private class MatchStreamListener implements StreamListener<String, MapRecord<String, String, String>> {
+        private final TradingPair tradingPair;
+
+        public MatchStreamListener(TradingPair tradingPair) {
+            this.tradingPair = tradingPair;
+        }
+
         @Override
         public void onMessage(MapRecord<String, String, String> message) {
             pendingCount.incrementAndGet();
             try {
-                processMatchMessage(message);
+                processMatchMessage(message, tradingPair);
             } finally {
                 pendingCount.decrementAndGet();
             }
@@ -209,11 +249,17 @@ public class RedisStreamToKafkaService {
      * 미체결 스트림 리스너
      */
     private class UnmatchStreamListener implements StreamListener<String, MapRecord<String, String, String>> {
+        private final TradingPair tradingPair;
+
+        public UnmatchStreamListener(TradingPair tradingPair) {
+            this.tradingPair = tradingPair;
+        }
+
         @Override
         public void onMessage(MapRecord<String, String, String> message) {
             pendingCount.incrementAndGet();
             try {
-                processUnmatchMessage(message);
+                processUnmatchMessage(message, tradingPair);
             } finally {
                 pendingCount.decrementAndGet();
             }
@@ -224,11 +270,17 @@ public class RedisStreamToKafkaService {
      * 부분 체결 스트림 리스너
      */
     private class PartialStreamListener implements StreamListener<String, MapRecord<String, String, String>> {
+        private final TradingPair tradingPair;
+
+        public PartialStreamListener(TradingPair tradingPair) {
+            this.tradingPair = tradingPair;
+        }
+
         @Override
         public void onMessage(MapRecord<String, String, String> message) {
             pendingCount.incrementAndGet();
             try {
-                processPartialMatchMessage(message);
+                processPartialMatchMessage(message, tradingPair);
             } finally {
                 pendingCount.decrementAndGet();
             }
@@ -239,12 +291,18 @@ public class RedisStreamToKafkaService {
      * 콜드 데이터 요청 리스너
      */
     private class ColdDataRequestListener implements StreamListener<String, MapRecord<String, String, String>> {
+        private final TradingPair tradingPair;
+
+        public ColdDataRequestListener(TradingPair tradingPair) {
+            this.tradingPair = tradingPair;
+        }
+
         @Override
         public void onMessage(MapRecord<String, String, String> message) {
             try {
-                processColdDataRequest(message);
+                processColdDataRequest(message, tradingPair);
             } catch (Exception e) {
-                log.error("콜드 데이터 요청 처리 오류", e);
+                log.error("콜드 데이터 요청 처리 오류 - {}: {}", tradingPair.getSymbol(), e.getMessage(), e);
             }
         }
     }
@@ -252,15 +310,15 @@ public class RedisStreamToKafkaService {
     /**
      * 매칭 메시지 처리 및 Kafka로 전송
      */
-    private void processMatchMessage(MapRecord<String, String, String> message) {
+    private void processMatchMessage(MapRecord<String, String, String> message, TradingPair tradingPair) {
         try {
             String messageId = message.getId().getValue();
             Map<String, String> body = message.getValue();
+            String streamKey = tradingPair.getMatchStreamKey();
 
             Instant instant = Instant.ofEpochSecond(Long.parseLong(body.get("timestamp")));
             LocalDate localDate = instant.atZone(ZoneId.systemDefault()).toLocalDate();
 
-            // 매칭된 주문 정보를 하나의 DTO로 생성
             KafkaMatchedOrderEvent matchedEvent = KafkaMatchedOrderEvent.builder()
                     .tradingPair(body.get("tradingPair"))
                     .executionPrice(new BigDecimal(body.get("executionPrice")))
@@ -275,8 +333,6 @@ public class RedisStreamToKafkaService {
                     .sellShard(shardCalculator.calculateShard(UUID.fromString(body.get("sellOrderId"))))
                     .build();
 
-            // 매칭 이벤트를 Kafka로 전송
-            // matchId를 key로 사용하여 이벤트 전송
             CompletableFuture<SendResult<String, Object>> future =
                     CompletableFuture.supplyAsync(() -> {
                         try {
@@ -286,29 +342,27 @@ public class RedisStreamToKafkaService {
                         }
                     }, kafkaExecutorService);
 
-            // 전송 완료 후 처리
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
-                    // 성공 시 Redis에서 ACK 처리
-                    redisTemplate.opsForStream().acknowledge(MATCH_STREAM_KEY, consumerGroupName, messageId);
-                    log.info("매칭 이벤트 Kafka 전송 완료: {}", messageId);
+                    redisTemplate.opsForStream().acknowledge(streamKey, consumerGroupName, messageId);
+                    log.debug("매칭 이벤트 Kafka 전송 완료 - {}: {}", tradingPair.getSymbol(), messageId);
                 } else {
-                    // 실패 시 로그만 남김 (Redis에서 ACK 하지 않음)
-                    log.error("매칭 이벤트 Kafka 전송 실패: {}", messageId, ex);
+                    log.error("매칭 이벤트 Kafka 전송 실패 - {}: {}", tradingPair.getSymbol(), messageId, ex);
                 }
             });
         } catch (Exception e) {
-            log.error("매칭 메시지 처리 오류", e);
+            log.error("매칭 메시지 처리 오류 - {}: {}", tradingPair.getSymbol(), e.getMessage(), e);
         }
     }
 
     /**
      * 미체결 메시지 처리 및 Kafka로 전송
      */
-    private void processUnmatchMessage(MapRecord<String, String, String> message) {
+    private void processUnmatchMessage(MapRecord<String, String, String> message, TradingPair tradingPair) {
         try {
             String messageId = message.getId().getValue();
             Map<String, String> body = message.getValue();
+            String streamKey = tradingPair.getUnmatchStreamKey();
 
             long timestamp = Long.parseLong(body.get("timestamp"));
             long processedTimestamp = "BUY".equals(body.get("orderType"))
@@ -332,7 +386,6 @@ public class RedisStreamToKafkaService {
                     .createdAt(instant)
                     .build();
 
-            // Kafka로 메시지 전송
             CompletableFuture<SendResult<String, Object>> future =
                     CompletableFuture.supplyAsync(() -> {
                         try {
@@ -344,26 +397,25 @@ public class RedisStreamToKafkaService {
 
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
-                    // 성공 시 Redis에서 ACK 처리
-                    redisTemplate.opsForStream().acknowledge(UNMATCH_STREAM_KEY, consumerGroupName, messageId);
-                    log.info("미체결 메시지 Kafka 전송 완료: {}", messageId);
+                    redisTemplate.opsForStream().acknowledge(streamKey, consumerGroupName, messageId);
+                    log.debug("미체결 메시지 Kafka 전송 완료 - {}: {}", tradingPair.getSymbol(), messageId);
                 } else {
-                    // 실패 시 로그만 남김 (Redis에서 ACK 하지 않음)
-                    log.info("미체결 메시지 Kafka 전송 실패: {}", messageId, ex);
+                    log.error("미체결 메시지 Kafka 전송 실패 - {}: {}", tradingPair.getSymbol(), messageId, ex);
                 }
             });
         } catch (Exception e) {
-            log.info("미체결 메시지 처리 오류", e);
+            log.error("미체결 메시지 처리 오류 - {}: {}", tradingPair.getSymbol(), e.getMessage(), e);
         }
     }
 
     /**
      * 부분체결 메시지 처리 및 Kafka로 전송
      */
-    private void processPartialMatchMessage(MapRecord<String, String, String> message) {
+    private void processPartialMatchMessage(MapRecord<String, String, String> message, TradingPair tradingPair) {
         try {
             String messageId = message.getId().getValue();
             Map<String, String> body = message.getValue();
+            String streamKey = tradingPair.getPartialMatchedStreamKey();
 
             KafkaMatchingEvent event = KafkaMatchingEvent.builder()
                     .tradingPair(body.get("tradingPair"))
@@ -374,161 +426,64 @@ public class RedisStreamToKafkaService {
                     .orderId(UUID.fromString(body.get("orderId")))
                     .build();
 
-            // Kafka로 메시지 전송
             CompletableFuture<SendResult<String, Object>> future =
                     kafkaTemplate.send(PARTIAL_MATCHED_KAFKA_TOPIC, body.get("orderId"), event);
 
             future.whenComplete((result, ex) -> {
                 if (ex == null) {
-                    // 성공 시 Redis에서 ACK 처리
-                    redisTemplate.opsForStream().acknowledge(PARTIAL_MATCHED_STREAM_KEY, consumerGroupName, messageId);
-                    log.info("부분체결 메시지 Kafka 전송 완료: {}", messageId);
+                    redisTemplate.opsForStream().acknowledge(streamKey, consumerGroupName, messageId);
+                    log.debug("부분체결 메시지 Kafka 전송 완료 - {}: {}", tradingPair.getSymbol(), messageId);
                 } else {
-                    // 실패 시 로그만 남김 (Redis에서 ACK 하지 않음)
-                    log.info("부분체결 메시지 Kafka 전송 실패: {}", messageId, ex);
+                    log.error("부분체결 메시지 Kafka 전송 실패 - {}: {}", tradingPair.getSymbol(), messageId, ex);
                 }
             });
         } catch (Exception e) {
-            log.info("미체결 메시지 처리 오류", e);
+            log.error("부분체결 메시지 처리 오류 - {}: {}", tradingPair.getSymbol(), e.getMessage(), e);
         }
     }
 
     /**
      * 콜드 데이터 요청 처리
      */
-    private void processColdDataRequest(MapRecord<String, String, String> message) {
+    private void processColdDataRequest(MapRecord<String, String, String> message, TradingPair tradingPair) {
         String messageId = message.getId().getValue();
         Map<String, String> body = message.getValue();
+        String streamKey = tradingPair.getColdDataRequestStreamKey();
 
-        String tradingPair = body.get("tradingPair");
-        String orderType = body.get("orderType"); // 필요한 반대 주문 타입
+        String orderType = body.get("orderType");
 
         try {
             // 콜드 데이터 로드
             loadColdData(tradingPair, orderType);
 
             // 완료 상태로 변경
-            String statusKey = "v6d:cold_data_status:" + tradingPair;
+            String statusKey = tradingPair.getColdDataStatusKey();
             redisTemplate.opsForValue().set(statusKey, "COMPLETED", 60, TimeUnit.SECONDS);
 
             // 대기 주문 처리
             processPendingOrders(tradingPair);
 
             // 메시지 확인
-            redisTemplate.opsForStream().acknowledge(
-                    COLD_DATA_REQUEST_STREAM_KEY, "cold-data-processor-group", messageId);
+            redisTemplate.opsForStream().acknowledge(streamKey, "cold-data-processor-group", messageId);
 
-            log.info("콜드 데이터 처리 완료: {}", tradingPair);
+            log.info("콜드 데이터 처리 완료 - {}: {}", tradingPair.getSymbol(), orderType);
 
         } catch (Exception e) {
-            log.error("콜드 데이터 처리 중 오류 발생: {}", tradingPair, e);
+            log.error("콜드 데이터 처리 중 오류 발생 - {}: {}", tradingPair.getSymbol(), e.getMessage(), e);
 
-            // 오류 발생 시 상태 초기화 (다시 요청 가능하도록)
-            String statusKey = "v6d:cold_data_status:" + tradingPair;
+            // 오류 발생 시 상태 초기화
+            String statusKey = tradingPair.getColdDataStatusKey();
             redisTemplate.delete(statusKey);
         }
     }
 
-    /**
-     * 콜드 데이터 로드
-     */
-    private void loadColdData(String tradingPair, String orderType) {
-        log.info("콜드 데이터 로드 시작: {} - {}", tradingPair, orderType);
-//
-//        // DB에서 해당 거래쌍의 활성 주문 조회
-//        List<Map<String, Object>> orders = jdbcTemplate.queryForList(
-//                "SELECT * FROM orders WHERE trading_pair = ? AND order_type = ? AND status = 'ACTIVE'",
-//                tradingPair, orderType);
-//
-//        // Redis에 복원할 키 결정
-//        String orderKey = "BUY".equals(orderType)
-//                ? "v6d:buy_orders:" + tradingPair
-//                : "v6d:sell_orders:" + tradingPair;
-//
-//        String orderbookKey = "BUY".equals(orderType)
-//                ? "v6d:orderbook:" + tradingPair + ":bids"
-//                : "v6d:orderbook:" + tradingPair + ":asks";
-//
-//        // Redis 파이프라인으로 일괄 처리
-//        redisTemplate.executePipelined((RedisCallback<Object>) connection -> {
-//            for (Map<String, Object> order : orders) {
-//                String orderId = order.get("order_id").toString();
-//                BigDecimal price = (BigDecimal) order.get("price");
-//                BigDecimal quantity = (BigDecimal) order.get("quantity");
-//                String userId = order.get("user_id").toString();
-//                Timestamp timestamp = (Timestamp) order.get("created_at");
-//
-//                // 주문 정보 구성
-//                String orderDetails = timestamp.getTime() + "|" + quantity + "|" + userId + "|" + orderId;
-//
-//                // 주문 데이터 저장
-//                connection.zAdd(orderKey.getBytes(), price.doubleValue(), orderDetails.getBytes());
-//
-//                // 호가 정보 업데이트
-//                byte[] priceKey = String.valueOf(price).getBytes();
-//                connection.hIncrBy(orderbookKey.getBytes(), priceKey, quantity.longValue());
-//            }
-//            return null;
-//        });
-//
-//        log.info("콜드 데이터 로드 완료: {} 개 주문", orders.size());
+    private void loadColdData(TradingPair tradingPair, String orderType) {
+        log.info("콜드 데이터 로드 시작 - {}: {}", tradingPair.getSymbol(), orderType);
+        // TODO: DB에서 콜드 데이터 로드 로직 구현
     }
 
-    /**
-     * 대기 주문 처리
-     */
-    private void processPendingOrders(String tradingPair) {
-        log.info("대기 주문 처리 시작: {}", tradingPair);
-//
-//        // 대기 주문 조회
-//        Map<Object, Object> pendingOrders = redisTemplate.opsForHash().entries("v6d:pending_orders");
-//        List<Object> processedKeys = new ArrayList<>();
-//
-//        for (Map.Entry<Object, Object> entry : pendingOrders.entrySet()) {
-//            String orderId = (String) entry.getKey();
-//            String orderValue = (String) entry.getValue();
-//
-//            String[] parts = orderValue.split("\\|");
-//            if (parts.length >= 4 && parts[3].equals(tradingPair)) {
-//                // 주문 데이터 파싱
-//                String orderDetails = parts[0] + "|" + parts[1] + "|" + parts[2];
-//                BigDecimal price = new BigDecimal(parts[1]);
-//                String orderType = parts[2];
-//
-//                // 주문 재처리 실행 (Lua 스크립트 호출)
-//                try {
-//                    Object result = redisTemplate.execute(
-//                            RedisScript.of("return redis.call('EVALSHA', '" +
-//                                            getOrderMatchingScriptSha() + "', 8, ...)",
-//                                    Object.class),
-//                            Arrays.asList(
-//                                    orderType.equals("BUY") ? "v6d:sell_orders:" + tradingPair : "v6d:buy_orders:" + tradingPair,
-//                                    orderType.equals("BUY") ? "v6d:buy_orders:" + tradingPair : "v6d:sell_orders:" + tradingPair,
-//                                    "v6d:stream:matches",
-//                                    "v6d:stream:unmatched",
-//                                    "v6d:stream:partialMatched",
-//                                    "v6d:idempotency:orders",
-//                                    "v6d:orderbook:" + tradingPair + ":bids",
-//                                    "v6d:orderbook:" + tradingPair + ":asks"
-//                            ),
-//                            orderType, price.toString(), parts[1], orderDetails, tradingPair, orderId, UUID.randomUUID().toString());
-//
-//                    // 처리 완료된 주문 마킹
-//                    processedKeys.add(orderId);
-//                    log.info("대기 주문 처리 완료: {}", orderId);
-//
-//                } catch (Exception e) {
-//                    log.error("대기 주문 처리 중 오류: {}", orderId, e);
-//                }
-//            }
-//        }
-//
-//        // 처리 완료된 주문 삭제
-//        if (!processedKeys.isEmpty()) {
-//            redisTemplate.opsForHash().delete("v6d:pending_orders",
-//                    processedKeys.toArray());
-//        }
-//
-//        log.info("대기 주문 처리 완료: {} 개", processedKeys.size());
+    private void processPendingOrders(TradingPair tradingPair) {
+        log.info("대기 주문 처리 시작 - {}", tradingPair.getSymbol());
+        // TODO: 대기 주문 처리 로직 구현
     }
 }

@@ -5,6 +5,7 @@ import com.exchange.order.application.result.FindCancelResult;
 import com.exchange.order.application.result.FindOrderResult;
 import com.exchange.order.infrastructure.dto.KafkaOrderCancelEvent;
 import com.exchange.order.infrastructure.dto.KafkaUserBalanceDecreaseEvent;
+import com.exchange.order.infrastructure.enums.TradingPair;
 import com.exchange.order.presentation.request.CancelOrderRequest;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,70 +24,108 @@ import java.util.UUID;
 @Slf4j
 public class OrderCommandService {
 
-    private final KafkaTemplate<String, KafkaUserBalanceDecreaseEvent> DecreasekafkaTemplate;
-    private final KafkaTemplate<String, KafkaOrderCancelEvent> CancelkafkaTemplate;
-    private static final String TOPIC_USER_BALANCE_DECREASE = "order-to-user.execute-decrease-balance";
-    private static final String SELL_ORDER_KEY = "v6:orders:sell:";
-    private static final String BUY_ORDER_KEY = "v6:orders:buy:";
-    private static final String CANCEL_STREAM_KEY = "stream:cancel"; // lua 스크립트 로드
-
+    private final KafkaTemplate<String, KafkaUserBalanceDecreaseEvent> decreaseKafkaTemplate;
     private final StringRedisTemplate redisTemplate;
     private final RedisScript<String> removeOrderScript;
 
-    //주문 생성
-    public FindOrderResult createOrder(CreateOrderCommand command) {
-        KafkaUserBalanceDecreaseEvent kafkaUserBalanceDecreaseEvent = KafkaUserBalanceDecreaseEvent.fromCommand(command);
+    private static final String TOPIC_USER_BALANCE_DECREASE = "order-to-user.execute-decrease-balance";
 
-        DecreasekafkaTemplate.send(TOPIC_USER_BALANCE_DECREASE, kafkaUserBalanceDecreaseEvent);
+    /**
+     * 주문 생성
+     */
+    public FindOrderResult createOrder(CreateOrderCommand command) {
+        KafkaUserBalanceDecreaseEvent kafkaUserBalanceDecreaseEvent =
+                KafkaUserBalanceDecreaseEvent.fromCommand(command);
+
+        decreaseKafkaTemplate.send(TOPIC_USER_BALANCE_DECREASE, kafkaUserBalanceDecreaseEvent);
+
+        log.info("주문 생성 요청 전송 완료 - 거래쌍: {}, 주문ID: {}",
+                command.getTradingPair(), command.getOrderId());
+
         return FindOrderResult.fromResult(kafkaUserBalanceDecreaseEvent);
     }
 
-    //주문 취소
+    /**
+     * 주문 취소
+     */
     public FindCancelResult cancelOrder(UUID userId, CancelOrderRequest request) {
-        // 1.유저가 맞 주문 취소한 유저가 해당 는지 확인
+        // 1. 유저 권한 확인
         if (!userId.equals(request.getUserId())) {
             throw new IllegalArgumentException("주문 취소 권한이 없습니다.");
         }
 
-        // 2. sorted set 키 설정
-        String tradingPair = request.getTradingPair();
-        String orderType = String.valueOf(request.getOrderType());
-        String zsetKey;
-        if ("BUY".equals(request.getOrderType())) {
-            zsetKey = BUY_ORDER_KEY + request.getTradingPair();
-        } else {
-            zsetKey = SELL_ORDER_KEY + request.getTradingPair();
-        }        String value = serializeOrderForCancel(
+        // 2. 거래쌍 파싱 및 검증
+        TradingPair tradingPair;
+        try {
+            tradingPair = TradingPair.fromSymbol(request.getTradingPair());
+        } catch (IllegalArgumentException e) {
+            log.error("지원하지 않는 거래쌍: {}", request.getTradingPair());
+            throw new IllegalArgumentException("지원하지 않는 거래쌍입니다: " + request.getTradingPair());
+        }
+
+        // 3. 클러스터 키 생성 (해시 태그 포함)
+        String zsetKey = generateOrderKey(tradingPair, String.valueOf(request.getOrderType()));
+        String cancelStreamKey = tradingPair.createHashTagKey("v6d", "stream", "cancel");
+
+        // 4. 주문 직렬화
+        String serializedOrder = serializeOrderForCancel(
                 request.getTimestamp(),
                 request.getQuantity(),
                 request.getUserId(),
                 request.getOrderId()
         );
-        System.out.println(zsetKey);
 
-        // 3. 루아스크립트로 미체결 주문 제거하기
-        List<String> keys = Arrays.asList(zsetKey , CANCEL_STREAM_KEY);
-        log.info("삭제 시도 value: '{}', length: {}", value, value.length());
+        log.info("주문 취소 시도 - 거래쌍: {}, 주문ID: {}, 키: {}",
+                tradingPair.getSymbol(), request.getOrderId(), zsetKey);
+        log.debug("직렬화된 주문 데이터: '{}' (길이: {})", serializedOrder, serializedOrder.length());
+
+        // 5. Lua 스크립트로 미체결 주문 제거
+        List<String> keys = Arrays.asList(zsetKey, cancelStreamKey);
+        String orderType = String.valueOf(request.getOrderType());
+
         try {
-            // 예외 발생 가능성이 있는 코드
-            String result = redisTemplate.execute(removeOrderScript, keys, value, tradingPair, orderType);
+            String result = redisTemplate.execute(
+                    removeOrderScript,
+                    keys,
+                    serializedOrder,
+                    tradingPair.getSymbol(),
+                    orderType
+            );
 
             if (result != null && !result.isEmpty()) {
-                log.info("삭제 성공: {}", result);
+                log.info("주문 취소 성공 - 거래쌍: {}, 주문ID: {}, 결과: {}",
+                        tradingPair.getSymbol(), request.getOrderId(), result);
             } else {
-                log.info("삭제 실패");
+                log.warn("주문 취소 실패 - 거래쌍: {}, 주문ID: {} (주문을 찾을 수 없음)",
+                        tradingPair.getSymbol(), request.getOrderId());
             }
+
         } catch (Exception e) {
-            e.printStackTrace(); // 콘솔에 스택트레이스 출력
-            log.error("예외 발생!", e); // 로그 파일에도 스택트레이스 출력
+            log.error("주문 취소 중 오류 발생 - 거래쌍: {}, 주문ID: {}",
+                    tradingPair.getSymbol(), request.getOrderId(), e);
+            throw new RuntimeException("주문 취소 처리 중 오류가 발생했습니다.", e);
         }
 
-        //3. 주문 취소 진행중 처리 완료
+        // 6. 주문 취소 결과 반환
         return FindCancelResult.fromResult(request);
     }
 
-    private String serializeOrderForCancel(long timestamp, BigDecimal quantity, UUID userId, UUID orderId)
-    {
+    /**
+     * 거래쌍과 주문 타입에 따른 클러스터 키 생성
+     */
+    private String generateOrderKey(TradingPair tradingPair, String orderType) {
+        if ("BUY".equals(orderType)) {
+            return tradingPair.createHashTagKey("v6d", "orders", "buy");
+        } else {
+            return tradingPair.createHashTagKey("v6d", "orders", "sell");
+        }
+    }
+
+    /**
+     * 주문 취소를 위한 주문 데이터 직렬화
+     * 형식: timestamp|quantity|userId|orderId
+     */
+    private String serializeOrderForCancel(long timestamp, BigDecimal quantity, UUID userId, UUID orderId) {
         String timeStr = String.format("%013d", timestamp);
         return timeStr + "|" + quantity + "|" + userId + "|" + orderId;
     }
