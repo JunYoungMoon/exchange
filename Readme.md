@@ -129,4 +129,4 @@ sudo docker exec -it redis-node3 redis-cli -a '비밀번호' -p 7003 FLUSHALL
 ```
 
 ### 참고 자료
-- [코인 거래소 프로세스 개선](https://lead-icicle-cc1.notion.site/1f2a7b429bd080fe81fcccad3acb0610)
+- [코인 거래소 프로세스 개선](https://lead-icicle-cc1.notion.site/1f8a7b429bd0800792ace95a880d076a?pvs=74)
