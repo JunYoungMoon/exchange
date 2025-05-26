@@ -6,8 +6,7 @@ import com.exchange.order_completed.domain.postgres.entity.TradeDataInfo;
 import com.exchange.order_completed.infrastructure.postgres.repository.ChartRepositoryReader;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
-
-import java.util.List;
+import reactor.core.publisher.Flux;
 
 @Service
 @RequiredArgsConstructor
@@ -15,8 +14,7 @@ public class TradeServiceImpl implements TradeService {
 
     private final ChartRepositoryReader chartRepositoryReader;
 
-    public List<TradeDataInfo> getTradeInfo(String pair, TimeInterval timeInterval) {
-
+    public Flux<TradeDataInfo> getTradeInfo(String pair, TimeInterval timeInterval) {
         String formattedPair = pair.toLowerCase().replace("/", "");
         String timeFormat = timeInterval.getShortCode();
         String viewName = String.format("%s_%s_trades", formattedPair, timeFormat);

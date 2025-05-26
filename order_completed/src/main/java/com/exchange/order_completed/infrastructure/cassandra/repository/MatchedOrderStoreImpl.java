@@ -8,23 +8,28 @@ import com.exchange.order_completed.domain.cassandra.entity.MatchedOrder;
 import com.exchange.order_completed.domain.cassandra.entity.UnmatchedOrder;
 import com.exchange.order_completed.domain.cassandra.repository.MatchedOrderStore;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.cassandra.core.CassandraTemplate;
 import org.springframework.data.cassandra.core.cql.CqlTemplate;
+import org.springframework.data.cassandra.core.cql.ReactiveCqlTemplate;
 import org.springframework.stereotype.Repository;
+import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 @Repository
 @RequiredArgsConstructor
+@Slf4j
 public class MatchedOrderStoreImpl implements MatchedOrderStore {
 
     private final MatchedOrderStoreRepository matchedOrderStoreRepository;
+    private final ReactiveCqlTemplate reactiveCqlTemplate;
     private final CassandraTemplate cassandraTemplate;
     private final CqlTemplate cqlTemplate;
 
     @Override
-    public void saveBatch(List<MatchedOrder> matchedOrderList) {
+    public Mono<Void> saveBatch(List<MatchedOrder> matchedOrderList) {
         BatchStatementBuilder batch = BatchStatement.builder(DefaultBatchType.LOGGED);
 
         for (MatchedOrder order : matchedOrderList) {
@@ -48,7 +53,7 @@ public class MatchedOrderStoreImpl implements MatchedOrderStore {
             batch.addStatement(stmt);
         }
 
-        cqlTemplate.execute(batch.build());
+        return reactiveCqlTemplate.execute(batch.build()).then();
     }
 
     @Override

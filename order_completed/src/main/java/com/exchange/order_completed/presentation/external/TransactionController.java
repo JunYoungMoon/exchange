@@ -10,21 +10,21 @@ import com.exchange.order_completed.domain.cassandra.entity.OrderType;
 import com.exchange.order_completed.domain.postgres.entity.TradeDataInfo;
 import com.exchange.order_completed.presentation.dto.PagedResult;
 import com.exchange.order_completed.presentation.dto.TradeDataResponse;
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
 import org.springframework.format.annotation.DateTimeFormat;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.List;
 
 @RestController
-@RequestMapping("/api/transactions")
+@RequestMapping("/api/order_completed")
 @RequiredArgsConstructor
 public class TransactionController {
 
@@ -32,37 +32,33 @@ public class TransactionController {
     private final OrderCompletedService completedService;
 
     @GetMapping(value = "/chart/{pair}/{interval}")
-    public ResponseEntity<ResponseDto<List<TradeDataInfo>>> getChartData(@PathVariable(value = "pair") String pair, @PathVariable(value = "interval") TimeInterval interval) {
-
-        return ResponseEntity.status(HttpStatus.OK).body(ResponseDto.success(tradeService.getTradeInfo(pair,interval)));
+    public Flux<TradeDataInfo> getChartData(@PathVariable String pair, @PathVariable TimeInterval interval) {
+        return tradeService.getTradeInfo(pair, interval);
     }
 
-    //체결 주문 조회
+    // 체결 주문 조회
     @GetMapping("/matched")
-    public ResponseEntity<ResponseDto<PagedResult<TradeDataResponse>>> findMatchedOrderHistory(
-            HttpServletRequest request,
+    public Mono<ResponseEntity<ResponseDto<PagedResult<TradeDataResponse>>>> findMatchedOrderHistory(
+            ServerHttpRequest request,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
             @RequestParam(defaultValue = "20") int size,
-            @RequestParam(defaultValue = "BUY", required = false) OrderType orderType,
+            @RequestParam(defaultValue = "BUY") OrderType orderType,
             @RequestParam(required = false) LocalDate startDate,
             @RequestParam(required = false) LocalDate endDate
     ) {
         UserInfoHeader userInfo = new UserInfoHeader(request);
 
-        Instant cursorInstant = null;
-        if (cursor != null) {
-            cursorInstant = cursor.atZone(ZoneId.systemDefault()).toInstant();
-        }
-        PagedResult<TradeDataResponse> pagedResult = completedService.findMatchedOrderHistory(userInfo.getUserId(), cursorInstant, size, orderType, startDate, endDate);
+        Instant cursorInstant = cursor != null ? cursor.atZone(ZoneId.systemDefault()).toInstant() : null;
 
-        return ResponseEntity.status(HttpStatus.OK).body(ResponseDto.success(pagedResult));
-
+        return completedService
+                .findMatchedOrderHistory(userInfo.getUserId(), cursorInstant, size, orderType, startDate, endDate)
+                .map(ResponseEntity::ok);
     }
 
-    //체결 주문 조회
+    // 미체결 주문 조회
     @GetMapping("/unmatched")
-    public ResponseEntity<ResponseDto<PagedResult<TradeDataResponse>>> findUnmatchedOrderHistory(
-            HttpServletRequest request,
+    public Mono<ResponseEntity<ResponseDto<PagedResult<TradeDataResponse>>>> findUnmatchedOrderHistory(
+            ServerHttpRequest request,
             @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime cursor,
             @RequestParam(defaultValue = "20") int size,
             @RequestParam(defaultValue = "BUY", required = false) OrderType orderType,
@@ -70,15 +66,25 @@ public class TransactionController {
             @RequestParam(required = false) LocalDate endDate,
             @RequestParam(defaultValue = "PENDING", required = false) OrderState orderState
     ) {
+        // 1. 사용자 정보 추출
         UserInfoHeader userInfo = new UserInfoHeader(request);
 
-        Instant cursorInstant = null;
-        if (cursor != null) {
-            cursorInstant = cursor.atZone(ZoneId.systemDefault()).toInstant();
-        }
-        PagedResult<TradeDataResponse> pagedResult = completedService.findUnmatchedOrderHistory(userInfo.getUserId(), cursorInstant, size, orderType, startDate, endDate, String.valueOf(orderState));
+        // 2. 커서를 Instant로 변환
+        Instant cursorInstant = cursor != null
+                ? cursor.atZone(ZoneId.systemDefault()).toInstant()
+                : null;
 
-        return ResponseEntity.status(HttpStatus.OK).body(ResponseDto.success(pagedResult));
-
+        // 3. 리액티브 서비스 호출
+        return completedService.findUnmatchedOrderHistory(
+                        userInfo.getUserId(),
+                        cursorInstant,
+                        size,
+                        orderType,
+                        startDate,
+                        endDate,
+                        orderState.name()
+                )
+                .map(ResponseDto::success)
+                .map(ResponseEntity::ok);
     }
 }

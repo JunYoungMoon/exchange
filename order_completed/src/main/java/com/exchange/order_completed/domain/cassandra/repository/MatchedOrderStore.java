@@ -2,12 +2,13 @@ package com.exchange.order_completed.domain.cassandra.repository;
 
 import com.exchange.order_completed.domain.cassandra.entity.MatchedOrder;
 import com.exchange.order_completed.domain.cassandra.entity.UnmatchedOrder;
+import reactor.core.publisher.Mono;
 
 import java.util.List;
 
 public interface MatchedOrderStore {
 
-    void saveBatch(List<MatchedOrder> matchedOrderList);
+    Mono<Void> saveBatch(List<MatchedOrder> matchedOrderList);
 
     void save(MatchedOrder matchedOrder);
 

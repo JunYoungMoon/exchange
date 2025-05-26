@@ -1,6 +1,6 @@
 spring:
   application:
-    name: order_completed
+    name: order_completed-service
   cache:
     type: simple
     cache-names: userOrders

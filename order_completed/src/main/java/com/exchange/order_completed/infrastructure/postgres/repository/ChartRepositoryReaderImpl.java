@@ -2,35 +2,34 @@ package com.exchange.order_completed.infrastructure.postgres.repository;
 
 import com.exchange.order_completed.domain.postgres.entity.TradeDataInfo;
 import lombok.RequiredArgsConstructor;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.RowMapper;
+import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Repository;
+import reactor.core.publisher.Flux;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
-import java.util.List;
 
 @RequiredArgsConstructor
 @Repository
 public class ChartRepositoryReaderImpl implements ChartRepositoryReader{
 
-    private final JdbcTemplate jdbcTemplate;
+    private final DatabaseClient databaseClient;
 
-    public List<TradeDataInfo> searchDataFromView(String viewName, String timeColumnName) {
-
+    public Flux<TradeDataInfo> searchDataFromView(String viewName, String timeColumnName) {
         String sql = "SELECT " + timeColumnName + ", pair, first_price, last_price, max_price, min_price, amount FROM " + viewName;
 
-        RowMapper<TradeDataInfo> rowMapper = (rs, rowNum) -> {
-            TradeDataInfo tradeData = new TradeDataInfo();
-            tradeData.setMinute(rs.getObject(timeColumnName, LocalDateTime.class));
-            tradeData.setPair(rs.getString("pair"));
-            tradeData.setFirstPrice(rs.getBigDecimal("first_price"));
-            tradeData.setLastPrice(rs.getBigDecimal("last_price"));
-            tradeData.setMaxPrice(rs.getBigDecimal("max_price"));
-            tradeData.setMinPrice(rs.getBigDecimal("min_price"));
-            tradeData.setAmount(rs.getBigDecimal("amount"));
-            return tradeData;
-        };
-
-        return jdbcTemplate.query(sql, rowMapper);
+        return databaseClient.sql(sql)
+                .map((row, metadata) -> {
+                    TradeDataInfo tradeData = new TradeDataInfo();
+                    tradeData.setMinute(row.get(timeColumnName, LocalDateTime.class));
+                    tradeData.setPair(row.get("pair", String.class));
+                    tradeData.setFirstPrice(row.get("first_price", BigDecimal.class));
+                    tradeData.setLastPrice(row.get("last_price", BigDecimal.class));
+                    tradeData.setMaxPrice(row.get("max_price", BigDecimal.class));
+                    tradeData.setMinPrice(row.get("min_price", BigDecimal.class));
+                    tradeData.setAmount(row.get("amount", BigDecimal.class));
+                    return tradeData;
+                })
+                .all();
     }
 }

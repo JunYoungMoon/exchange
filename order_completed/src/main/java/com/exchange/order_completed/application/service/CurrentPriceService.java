@@ -1,40 +1,43 @@
 package com.exchange.order_completed.application.service;
 
 import com.exchange.order_completed.application.command.CreateMatchedOrderStoreCommand;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.ReactiveStringRedisTemplate;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
 import java.util.List;
 
 @Service
+@RequiredArgsConstructor
 @Slf4j
 public class CurrentPriceService {
 
     private final RedisTemplate<String, String> redisTemplate;
+    private final ReactiveStringRedisTemplate reactiveRedisTemplate;
 
     // Redis 키 접두사 정의
     private static final String CURRENT_PRICE_KEY_PREFIX = "market:current_price:";
 
-    @Autowired
-    public CurrentPriceService(RedisTemplate<String, String> redisTemplate) {
-        this.redisTemplate = redisTemplate;
-    }
-
     /**
      * 체결 이벤트에서 현재 가격 업데이트
      */
-    public void updateCurrentPrice(List<CreateMatchedOrderStoreCommand> matchedOrders) {
-        for (CreateMatchedOrderStoreCommand order : matchedOrders) {
-            String tradingPair = order.tradingPair();
-            BigDecimal executionPrice = order.price();
+    public Mono<Void> updateCurrentPrice(List<CreateMatchedOrderStoreCommand> matchedOrders) {
+        return Flux.fromIterable(matchedOrders)
+                .flatMap(order -> {
+                    String tradingPair = order.tradingPair();
+                    String price = order.price().toString();
+                    String redisKey = CURRENT_PRICE_KEY_PREFIX + tradingPair;
 
-            // 현재 가격 저장
-            redisTemplate.opsForValue().set(CURRENT_PRICE_KEY_PREFIX + tradingPair, executionPrice.toString());
-            log.debug("{}의 현재 가격 업데이트: {}", tradingPair, executionPrice);
-        }
+                    return reactiveRedisTemplate.opsForValue()
+                            .set(redisKey, price)
+                            .doOnNext(success -> log.debug("{}의 현재 가격 업데이트: {}", tradingPair, price));
+                })
+                .then(); // 최종 결과 Mono<Void>
     }
 
     /**
