@@ -3,7 +3,6 @@ package com.exchange.order_completed.application.service;
 import com.exchange.order_completed.application.command.ChartCommand;
 import com.exchange.order_completed.application.command.CreateMatchedOrderStoreCommand;
 import com.exchange.order_completed.application.command.CreateUnmatchedOrderStoreCommand;
-import com.exchange.order_completed.common.exception.DuplicateUnmatchedOrderInformationException;
 import com.exchange.order_completed.common.response.ResponseDto;
 import com.exchange.order_completed.domain.cassandra.entity.ColdDataOrders;
 import com.exchange.order_completed.domain.cassandra.entity.MatchedOrder;
