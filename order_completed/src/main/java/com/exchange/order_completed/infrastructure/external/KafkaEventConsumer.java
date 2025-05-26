@@ -3,7 +3,6 @@ package com.exchange.order_completed.infrastructure.external;
 import com.exchange.order_completed.application.command.ChartCommand;
 import com.exchange.order_completed.application.command.CreateMatchedOrderStoreCommand;
 import com.exchange.order_completed.application.command.CreateUnmatchedOrderStoreCommand;
-import com.exchange.order_completed.application.service.CurrentPriceService;
 import com.exchange.order_completed.application.service.OrderCompletedService;
 import com.exchange.order_completed.infrastructure.dto.CompletedOrderChangeEvent;
 import com.exchange.order_completed.infrastructure.dto.KafkaMatchedOrderStoreEvent;
@@ -32,34 +31,23 @@ public class KafkaEventConsumer {
 
     private final KafkaReceiver<String, KafkaMatchedOrderStoreEvent> kafkaReceiver;
     private final OrderCompletedService orderCompletedService;
-    private final CurrentPriceService currentPriceService;
 
     @EventListener(ApplicationReadyEvent.class)
     public void startKafkaListeners() {
         kafkaReceiver.receive()
                 .publishOn(Schedulers.boundedElastic())
                 .bufferTimeout(3000, Duration.ofMillis(500))
-                .doOnNext(recordList -> {
-                    processOrderCompletedInParallel(recordList).subscribe(); // 병렬 처리
-                })
-                .concatMap(this::updateCurrentPriceSequentially)  // 순서 중요
+                .flatMap(this::consumeMatchedMessage)
                 .onErrorContinue((err, obj) -> log.error("Kafka 처리 중 오류", err))
                 .subscribe();
     }
 
-    private Mono<Void> processOrderCompletedInParallel(List<ReceiverRecord<String, KafkaMatchedOrderStoreEvent>> recordList) {
-        log.info("Kafka 메시지 수신: {}", recordList.size());
-
-        List<CreateMatchedOrderStoreCommand> commandList = extractCommandList(recordList);
-        return orderCompletedService.completeMatchedOrder(commandList);
-    }
-
-    private Mono<Void> updateCurrentPriceSequentially(List<ReceiverRecord<String, KafkaMatchedOrderStoreEvent>> recordList) {
+    private Mono<Void> consumeMatchedMessage(List<ReceiverRecord<String, KafkaMatchedOrderStoreEvent>> recordList) {
         log.info("Kafka 메시지 수신: {}", recordList.size());
 
         List<CreateMatchedOrderStoreCommand> commandList = extractCommandList(recordList);
 
-        return currentPriceService.updateCurrentPrice(commandList)
+        return orderCompletedService.completeMatchedOrder(commandList)
                 .then(Mono.fromRunnable(() ->
                         recordList.forEach(record -> record.receiverOffset().acknowledge())));
     }
