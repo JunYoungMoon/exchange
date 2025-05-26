@@ -9,6 +9,7 @@ import java.time.LocalDateTime;
 @Getter
 @Setter
 public class TradeDataInfo {
+
     private LocalDateTime minute;
     private String pair;
 

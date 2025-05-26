@@ -1,6 +1,7 @@
 package com.exchange.order_completed.application;
 
 public enum TimeInterval {
+
     ONE_MINUTE("m1","minute"),
     THREE_MINUTES("m3","minute"),
     FIVE_MINUTES("m5","minute"),
