@@ -18,7 +18,7 @@ import java.util.UUID;
 @RequestMapping
 @RestController
 @RequiredArgsConstructor
-public class OrderCompletedController {
+public class TestOrderCompletedController {
 
     private final KafkaTemplate<String, Object> kafkaTemplate;
     private final OrderCompletedService orderCompletedService;
@@ -27,7 +27,7 @@ public class OrderCompletedController {
     UUID fixedUserId = UUID.fromString("11111111-1111-1111-1111-111111111111");
     UUID fixedOrderId = UUID.fromString("20ab765f-5326-4366-a0e9-2b6d40087781");
 
-    @GetMapping("/matched")
+    @GetMapping("/matched-orders")
     public ResponseEntity<ResponseDto<String>> orderMatched() {
 
         UUID randomUserId = fixedUserId;
@@ -58,7 +58,7 @@ public class OrderCompletedController {
         return ResponseEntity.ok(ResponseDto.success("success"));
     }
 
-    @GetMapping("/unmatched")
+    @GetMapping("/unmatched-orders")
     public ResponseEntity<ResponseDto<String>> orderUnmatched() {
 
         UUID randomUserId = fixedUserId;
