@@ -4,9 +4,9 @@ import com.exchange.order_completed.domain.cassandra.entity.UnmatchedOrder;
 import com.exchange.order_completed.domain.cassandra.repository.UnmatchedOrderReader;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Repository;
+import reactor.core.publisher.Flux;
 
 import java.time.LocalDate;
-import java.util.List;
 import java.util.UUID;
 
 @Repository
@@ -14,6 +14,7 @@ import java.util.UUID;
 public class UnmatchedOrderReaderImpl implements UnmatchedOrderReader {
 
     private final UnmatchedOrderReaderRepository unmatchedOrderReaderRepository;
+    private final ReactiveUnmatchedOrderReaderRepository reactiveUnmatchedOrderReaderRepository;
 
     @Override
     public UnmatchedOrder findUnmatchedOrder(UUID userId, int shard, LocalDate yearMonthDate, UUID orderId, Integer attempt) {
@@ -24,7 +25,7 @@ public class UnmatchedOrderReaderImpl implements UnmatchedOrderReader {
     }
 
     @Override
-    public List<UnmatchedOrder> findByUserIdAndShardInAndYearMonthDateRange(UUID userId, int shard1, int shard2, int shard3, LocalDate fromDate, LocalDate toDate) {
-        return unmatchedOrderReaderRepository.findByUserIdAndShardInAndYearMonthDateRange(userId, shard1, shard2, shard3, fromDate, toDate);
+    public Flux<UnmatchedOrder> findByUserIdAndShardInAndYearMonthDateRange(UUID userId, int shard1, int shard2, int shard3, LocalDate fromDate, LocalDate toDate) {
+        return reactiveUnmatchedOrderReaderRepository.findByUserIdAndShardInAndYearMonthDateRange(userId, shard1, shard2, shard3, fromDate, toDate);
     }
 }

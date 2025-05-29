@@ -17,6 +17,7 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class KafkaUnmatchedOrderStoreEvent {
+
     private String tradingPair;
     private OrderType orderType;
     private BigDecimal price;

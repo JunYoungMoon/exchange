@@ -3,7 +3,7 @@ package com.exchange.order_completed.application.service;
 import com.exchange.order_completed.application.command.ChartCommand;
 import com.exchange.order_completed.application.command.CreateMatchedOrderStoreCommand;
 import com.exchange.order_completed.application.command.CreateUnmatchedOrderStoreCommand;
-import com.exchange.order_completed.common.exception.DuplicateUnmatchedOrderInformationException;
+import com.exchange.order_completed.common.response.ResponseDto;
 import com.exchange.order_completed.domain.cassandra.entity.ColdDataOrders;
 import com.exchange.order_completed.domain.cassandra.entity.MatchedOrder;
 import com.exchange.order_completed.domain.cassandra.entity.OrderType;
@@ -21,6 +21,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
 import java.time.Instant;
@@ -57,11 +58,11 @@ public class OrderCompletedService {
         }
     }
 
-    public void completeMatchedOrder(List<CreateMatchedOrderStoreCommand> commandList) {
+    public Mono<Void> completeMatchedOrder(List<CreateMatchedOrderStoreCommand> commandList) {
         List<MatchedOrder> matchedOrderList = commandList.stream()
                 .map(CreateMatchedOrderStoreCommand::toEntity)
                 .toList();
-        matchedOrderStore.saveBatch(matchedOrderList);
+        return matchedOrderStore.saveBatch(matchedOrderList);
     }
 
     public void updateUnmatchedOrderQuantity(MatchedOrder matchedOrder, UnmatchedOrder unmatchedOrder) {
@@ -97,8 +98,7 @@ public class OrderCompletedService {
         chartRepositoryStore.save(chart);
     }
 
-    //체결 주문 조회
-    public PagedResult<TradeDataResponse> findMatchedOrderHistory(
+    public Mono<ResponseDto<PagedResult<TradeDataResponse>>> findMatchedOrderHistory(
             UUID userId,
             Instant cursor,
             int size,
@@ -106,35 +106,27 @@ public class OrderCompletedService {
             LocalDate startDate,
             LocalDate endDate
     ) {
-        // 1. 날짜 범위 계산
+        // 날짜 범위 계산
         DateRange range = calculateDateRange(startDate, endDate);
-        // 2. 샤드 리스트 준비
+
+        // 샤드 리스트 준비
         List<Integer> shards = getShardList();
 
-        // 3. Repository에서 한 번에 범위 조회
-        List<MatchedOrder> allOrders = matchedOrderReader.findByUserIdAndShardInAndYearMonthDateRange(
-                userId, shards.get(0), shards.get(1), shards.get(2), range.from, range.to
-        );
-
-        // 4. orderType이 있다면 앱에서 필터링 (대소문자 무시)
-        if (orderType != null) {
-            try {
-
-                allOrders = allOrders.stream()
-                        .filter(order -> orderType.equals(order.getOrderType()))
-                        .toList();
-            } catch (IllegalArgumentException e) {
-                // 예외 처리: 잘못된 enum 문자열이 들어온 경우
-                allOrders = List.of(); // 또는 에러 응답 등
-            }
-        }
-
-        // 5. 페이징/커서 변환
-        return toPagedResult(allOrders, cursor, size, TradeDataResponse::fromMatchedEntity);
+        // Repository에서 한 번에 범위 조회
+        return matchedOrderReader
+                .findByUserIdAndShardInAndYearMonthDateRange(
+                        userId,
+                        shards.get(0), shards.get(1), shards.get(2),
+                        range.from, range.to
+                ) // Flux<MatchedOrder>
+                .filter(order -> orderType == null || orderType.equals(order.getOrderType()))
+                // Flux를 List로 수집
+                .collectList()
+                .map(allOrders -> toPagedResult(allOrders, cursor, size, TradeDataResponse::fromMatchedEntity))
+                .map(ResponseDto::success);
     }
 
-    // 미체결 주문 조회
-    public PagedResult<TradeDataResponse> findUnmatchedOrderHistory(
+    public Mono<PagedResult<TradeDataResponse>> findUnmatchedOrderHistory(
             UUID userId,
             Instant cursor,
             int size,
@@ -143,38 +135,31 @@ public class OrderCompletedService {
             LocalDate endDate,
             String orderState
     ) {
-        // 1. 날짜 범위 계산
+        // 날짜 범위 계산
         DateRange range = calculateDateRange(startDate, endDate);
-        // 2. 샤드 리스트 준비
+
+        // 샤드 리스트 준비
         List<Integer> shards = getShardList();
 
-        // 3. Repository에서 한 번에 범위 조회
-        List<UnmatchedOrder> allOrders = unmatchedOrderReader.findByUserIdAndShardInAndYearMonthDateRange(
-                userId, shards.get(0), shards.get(1), shards.get(2), range.from, range.to
-        );
-
-        // 4. orderType이 있다면 앱에서 필터링 (대소문자 무시)
-        if (orderType != null) {
-            try {
-                allOrders = allOrders.stream()
-                        .filter(order -> orderType.equals(order.getOrderType()))
-                        .toList();
-            } catch (IllegalArgumentException e) {
-                // 예외 처리: 잘못된 enum 문자열이 들어온 경우
-                allOrders = List.of(); // 또는 에러 응답 등
-            }
-        }
-
-        // 5. orderState가 있다면 앱에서 필터링 (Enum → String 변환 후 대소문자 무시)
-        if (orderState != null) {
-            allOrders = allOrders.stream()
-                    .filter(order -> order.getOrderState() != null &&
-                            orderState.equalsIgnoreCase(order.getOrderState().name()))
-                    .toList();
-        }
-
-        // 6. 페이징/커서 변환
-        return toPagedResult(allOrders, cursor, size, TradeDataResponse::fromUnmatchedEntity);
+        // Repository에서 한 번에 범위 조회
+        return unmatchedOrderReader
+                .findByUserIdAndShardInAndYearMonthDateRange(
+                        userId,
+                        shards.get(0), shards.get(1), shards.get(2),
+                        range.from, range.to
+                ) // Flux<UnmatchedOrder>
+                .filter(order -> orderType == null || orderType.equals(order.getOrderType()))
+                .filter(order -> {
+                    if (orderState == null || order.getOrderState() == null) return true;
+                    return orderState.equalsIgnoreCase(order.getOrderState().name());
+                })
+                .collectList() // Mono<List<UnmatchedOrder>>
+                .map(filteredOrders -> toPagedResult(
+                        filteredOrders,
+                        cursor,
+                        size,
+                        TradeDataResponse::fromUnmatchedEntity
+                ));
     }
 
     //조회 공통 메서드 분리
