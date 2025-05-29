@@ -26,14 +26,6 @@ spring:
     consumer:
       auto-offset-reset: earliest
 
-#  data:
-#    redis:
-#      host: ${REDIS_HOST}
-##      host: localhost
-#      port: 7001
-#      username: ${REDIS_NAME}
-#      password: ${REDIS_PASSWORD}
-
   data:
     redis:
       cluster:
@@ -80,3 +72,7 @@ redis:
       thread-count: 4  # 처리할 스레드 수
     message:
       batch-size: 10   # 한 번에 가져올 메시지 수
+
+kafka:
+  consumer:
+    memory-threshold-mb: 1024

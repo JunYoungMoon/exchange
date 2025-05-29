@@ -7,15 +7,10 @@ import com.datastax.oss.driver.api.core.cql.SimpleStatement;
 import com.exchange.order_completed.domain.cassandra.entity.ColdDataOrders;
 import com.exchange.order_completed.domain.cassandra.entity.UnmatchedOrder;
 import com.exchange.order_completed.domain.cassandra.repository.UnmatchedOrderStore;
-import com.exchange.order_completed.infrastructure.enums.OrderType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.cassandra.core.CassandraTemplate;
 import org.springframework.data.cassandra.core.cql.CqlTemplate;
 import org.springframework.stereotype.Repository;
-
-import java.math.BigDecimal;
-import java.time.LocalDate;
-import java.util.UUID;
 
 @Repository
 @RequiredArgsConstructor

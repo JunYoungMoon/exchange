@@ -1,7 +1,8 @@
 package com.exchange.order_completed.common;
 
-import jakarta.servlet.http.HttpServletRequest;
 import lombok.Getter;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.server.reactive.ServerHttpRequest;
 
 import java.util.UUID;
 
@@ -12,10 +13,11 @@ public class UserInfoHeader {
     private final String username;
     private final UserRole userRole;
 
-    public UserInfoHeader(HttpServletRequest request) {
-        this.userId = UUID.fromString(request.getHeader("X-USER-ID"));
-        this.username = request.getHeader("X-USERNAME");
-        this.userRole = UserRole.valueOf(request.getHeader("X-USER-ROLE"));
+    public UserInfoHeader(ServerHttpRequest request) {
+        HttpHeaders headers = request.getHeaders();
+        this.userId = UUID.fromString(headers.getFirst("X-USER-ID"));
+        this.username = headers.getFirst("X-USERNAME");
+        this.userRole = UserRole.valueOf(headers.getFirst("X-USER-ROLE"));
     }
 }
 
