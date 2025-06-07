@@ -66,11 +66,11 @@ public class KafkaConfig {
     }
 
     /**
-     * Receive 서버 종료시 재시도 Kafka 템플릿
+     * 장애시 재시도 Kafka 템플릿
      */
     @Bean
-    public ConcurrentKafkaListenerContainerFactory<String, KafkaMatchingEvent> retryQueueListenerContainerFactory() {
-        return kafkaCommonConfig.createAutoCommitListenerFactory(
+    public ConcurrentKafkaListenerContainerFactory<String, KafkaMatchingEvent> delayedRetryListenerContainerFactory() {
+        return kafkaCommonConfig.createManualCommitListenerFactory(
                 new TypeReference<>() {
                 }, "retry-processor", DEFAULT_CONCURRENCY);
     }
